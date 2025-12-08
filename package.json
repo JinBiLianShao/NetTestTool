@@ -1,0 +1,67 @@
+{
+  "name": "net-test-tool",
+  "version": "1.0.0",
+  "description": "网络调试工具，具备网络层调试的所有功能，如arp测试，IP协议测试，ICMP测试，性能网口吞吐量测试，延时测试，丢包率统计网络环境查询（类似CPing）。",
+  "license": "MIT",
+  "author": "liansixin",
+  "type": "commonjs",
+  "main": "./main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "iconv-lite": "^0.6.3"
+  },
+  "devDependencies": {
+    "app-builder-lib": "^26.0.12",
+    "electron": "^37.2.4",
+    "electron-builder": "^26.0.12",
+    "electron-builder-squirrel-windows": "^26.0.12",
+    "electron-winstaller": "^5.4.0",
+    "node-gyp": "^10.2.0",
+    "node-gyp-build": "^4.8.1",
+    "rimraf": "^2.6.3",
+    "temp": "^0.9.4"
+  },
+  "build": {
+    "productName": "NetTestTool",
+    "appId": "com.NetTestTool",
+    "directories": {
+      "output": "app_file"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "./main.ico",
+      "uninstallerIcon": "./main.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NetTestTool"
+    },
+    "win": {
+      "icon": "./main.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "ia32",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "./icons",
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
+      "category": "Utility",
+      "maintainer": "liansixin <2013182991@qq.com>"
+    }
+  }
+}
