@@ -28,10 +28,19 @@
 
         <div id="ping" class="tab-pane">
             <h2>ICMP / Ping 测试</h2>
-            <div class="control-bar">
-                <input type="text" id="ping-target" value="127.0.0.1" placeholder="IP 或 域名">
-                <input type="number" id="ping-interval" value="0.5" min="0.1" step="0.1" placeholder="间隔 (秒)">
-                <input type="number" id="ping-size" value="32" min="1" placeholder="包大小 (字节)">
+            <div class="control-bar input-group-row">
+                <div class="form-control">
+                    <label for="ping-target">目标地址 (IP/域名)</label>
+                    <input type="text" id="ping-target" value="127.0.0.1" placeholder="如 127.0.0.1 或 google.com">
+                </div>
+                <div class="form-control">
+                    <label for="ping-interval">间隔 (秒)</label>
+                    <input type="number" id="ping-interval" value="0.5" min="0.1" step="0.1" placeholder="0.1 ~ 60">
+                </div>
+                <div class="form-control">
+                    <label for="ping-size">包大小 (字节)</label>
+                    <input type="number" id="ping-size" value="32" min="1" placeholder="1 ~ 65500">
+                </div>
 
                 <button class="btn-primary" onclick="togglePing()">开始 Ping</button>
             </div>
@@ -45,17 +54,45 @@
         </div>
 
         <div id="throughput" class="tab-pane">
-            <h2>TCP 吞吐量测试</h2>
+            <h2>TCP/UDP 吞吐量测试 (iperf 模式)</h2>
 
             <div class="tp-controls">
                 <div class="card">
                     <h3>我是接收端 (Server)</h3>
+                    <div class="form-control">
+                        <label for="tp-server-protocol">选择协议</label>
+                        <select id="tp-server-protocol" class="protocol-select">
+                            <option value="tcp">TCP</option>
+                            <option value="udp">UDP</option>
+                        </select>
+                    </div>
                     <button onclick="startServer()">启动服务 (Port 5201)</button>
                     <p id="server-status" class="status-text">未启动</p>
                 </div>
                 <div class="card">
                     <h3>我是发送端 (Client)</h3>
-                    <input type="text" id="tp-ip" placeholder="服务端 IP" value="127.0.0.1">
+                    <div class="form-control">
+                        <label for="tp-ip">服务端 IP</label>
+                        <input type="text" id="tp-ip" placeholder="如 192.168.1.1" value="127.0.0.1">
+                    </div>
+                    <div class="form-control">
+                        <label for="tp-client-protocol">选择协议</label>
+                        <select id="tp-client-protocol" class="protocol-select" onchange="toggleUdpConfig()">
+                            <option value="tcp">TCP</option>
+                            <option value="udp">UDP</option>
+                        </select>
+                    </div>
+                    <div id="udp-config" style="margin-top: 15px; display: none;">
+                        <h4>UDP 模式配置</h4>
+                        <div class="form-control">
+                            <label for="tp-udp-bandwidth">目标带宽 (Mbps)</label>
+                            <input type="number" id="tp-udp-bandwidth" value="10" min="1" placeholder="目标发送速率">
+                        </div>
+                        <div class="form-control">
+                            <label for="tp-udp-size">数据包大小 (字节)</label>
+                            <input type="number" id="tp-udp-size" value="1470" min="1" placeholder="建议 1470 (以太网 MTU-IP头-UDP头)">
+                        </div>
+                    </div>
                     <button id="btn-tp-client" onclick="toggleClient()">开始测试</button>
                 </div>
             </div>

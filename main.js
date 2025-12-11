@@ -3,6 +3,7 @@ const path = require('path');
 const { exec } = require('child_process');
 const os = require('os');
 const net = require('net');
+const dgram = require('dgram');
 const iconv = require('iconv-lite');
 
 let mainWindow;
@@ -20,7 +21,7 @@ function createWindow() {
   mainWindow.loadFile('index.html');
 }
 
-// === 工具函数：解决 Windows 命令行中文乱码 (主要用于 ARP) ===
+// === 工具函数：解决 Windows 命令行中文乱码 ===
 function decodeOutput(data) {
   const isWin = os.platform() === 'win32';
   return isWin ? iconv.decode(data, 'cp936') : data.toString();
@@ -45,7 +46,7 @@ ipcMain.handle('net:interfaces', () => {
   return results;
 });
 
-// === 2. Ping 测试 (ICMP) - 修复中文解析和间隔问题 ===
+// === 2. Ping 测试 (ICMP) ===
 let pingTimer = null;
 
 ipcMain.on('net:ping-start', (event, config) => {
@@ -64,62 +65,51 @@ ipcMain.on('net:ping-start', (event, config) => {
     let decode_encoding = 'utf8';
 
     if (os.platform() === 'win32') {
-      // 核心修复: 强制使用 cmd.exe /C chcp 437 来确保英文输出 (Code Page 437 is US English)
       command = `cmd.exe /C "chcp 437 && ping -n 1 -l ${size} ${target}"`;
-      decode_encoding = 'cp437'; // 必须使用 CP437 解码
+      decode_encoding = 'cp437';
     } else {
-      // Linux/macOS
       command = `ping -c 1 -s ${size} ${target}`;
     }
 
-    // Windows 上环境变量可能干扰 chcp 437 的效果，所以我们只在非 Windows 上设置。
     const env = os.platform() === 'win32' ? process.env : { ...process.env, LC_ALL: 'C', LANG: 'C' };
 
-    // 必须使用 encoding: 'binary' 来捕获原始字节流
     exec(command, { encoding: 'binary', env, timeout: 5000 }, (err, stdout, stderr) => {
       let replyText;
 
       const outputBuffer = Buffer.from(stdout, 'binary');
       const errorBuffer = Buffer.from(stderr, 'binary');
 
-      // 使用正确的编码进行解码
       const output = iconv.decode(outputBuffer, decode_encoding);
       const errorOutput = iconv.decode(errorBuffer, decode_encoding);
 
       if (err) {
-        // 检查常见的超时/不可达错误（英文输出）
         if (output.includes('Request timed out') || output.includes('Destination host unreachable')) {
           replyText = `请求超时或目标不可达: ${target}\n`;
         } else {
           replyText = `Ping 发生错误: ${output || errorOutput || err.message}\n`;
         }
       } else {
-        // === 时间解析修复 START ===
         const lessThanOneMatch = output.match(/time<1ms/i);
         const regularTimeMatch = output.match(/time=(\d+)ms/i);
 
         let time;
         if (lessThanOneMatch) {
-          time = '<1ms'; // 匹配 time<1ms
+          time = '<1ms';
         } else if (regularTimeMatch) {
-          time = `${regularTimeMatch[1]}ms`; // 匹配 time=Xms
+          time = `${regularTimeMatch[1]}ms`;
         } else {
-          time = 'N/A'; // 其他未匹配情况
+          time = 'N/A';
         }
-        // === 时间解析修复 END ===
 
-        // TTL 和 Bytes 解析保持不变
         const ttlMatch = output.match(/TTL=(\d+)/i);
         const bytesMatch = output.match(/Bytes=(\d+)|bytes=(\d+)/i);
 
         const ttl = ttlMatch ? ttlMatch[1] : 'N/A';
         const bytes = bytesMatch ? (bytesMatch[1] || bytesMatch[2] || size) : size;
 
-        // 检查是否成功收到回复 (英文输出: 'Reply from' 或 'transmitted, 1 received')
         if (output.includes('Reply from') || output.includes('transmitted, 1 received')) {
           replyText = `来自 ${target} 的回复：字节=${bytes} 时间=${time} TTL=${ttl}\n`;
         } else {
-          // 仍然失败或无法解析
           replyText = `请求超时或目标不可达: ${target}\n`;
         }
       }
@@ -136,7 +126,7 @@ ipcMain.on('net:ping-stop', () => {
   }
 });
 
-// === 3. ARP 表查询 (保持不变) ===
+// === 3. ARP 表查询 ===
 ipcMain.handle('net:arp', async () => {
   return new Promise((resolve) => {
     exec('arp -a', { encoding: 'binary' }, (err, stdout, stderr) => {
@@ -146,79 +136,199 @@ ipcMain.handle('net:arp', async () => {
   });
 });
 
-// === 4. 吞吐量测试 (TCP Throughput) (保持不变) ===
+// ==========================================================
+// === 4. TCP/UDP 吞吐量测试 (iperf 模式) ===
+// ==========================================================
 let throughputServer = null;
 let throughputSocket = null;
+let udpServer = null;
+let udpClient = null;
+let udpClientTimer = null;
+
+let totalBytesReceived = 0;
+let lastCheckTime = Date.now();
+let speedTimer = null;
+
+// --- Server Logic ---
+function startTcpServer(port, resolve) {
+  throughputServer = net.createServer((socket) => {
+    socket.on('data', (data) => {
+      totalBytesReceived += data.length;
+    });
+    socket.on('close', () => {
+      mainWindow.webContents.send('tp-log', 'TCP 连接关闭');
+    });
+    socket.on('error', (err) => {
+      mainWindow.webContents.send('tp-log', `TCP Server Socket 错误: ${err.message}`);
+    });
+  });
+
+  throughputServer.listen(port, '0.0.0.0', () => {
+    resolve(`TCP 服务端已启动，监听端口: ${port}`);
+  });
+
+  throughputServer.on('error', (err) => {
+    resolve(`TCP 服务端启动失败: ${err.message}`);
+  });
+}
+
+function startUdpServer(port, resolve) {
+  udpServer = dgram.createSocket('udp4');
+
+  udpServer.on('message', (msg) => {
+    totalBytesReceived += msg.length;
+  });
+
+  udpServer.on('listening', () => {
+    resolve(`UDP 服务端已启动，监听端口: ${port}`);
+  });
+
+  udpServer.on('error', (err) => {
+    resolve(`UDP 服务端错误: ${err.message}`);
+    udpServer.close();
+  });
+
+  udpServer.bind(port, '0.0.0.0');
+}
 
 // 启动服务端
-ipcMain.handle('net:tp-server', (event, port) => {
+ipcMain.handle('net:tp-server', (event, { port, protocol }) => {
   return new Promise((resolve) => {
-    if (throughputServer) throughputServer.close();
+    if (throughputServer) throughputServer.close(() => throughputServer = null);
+    if (udpServer) udpServer.close(() => udpServer = null);
 
-    throughputServer = net.createServer((socket) => {
-      socket.on('data', () => {});
-    });
+    totalBytesReceived = 0;
+    lastCheckTime = Date.now();
+    if (speedTimer) clearInterval(speedTimer);
 
-    throughputServer.listen(port, '0.0.0.0', () => {
-      resolve(`服务端已启动，监听端口: ${port}`);
-    });
+    // 【核心】每 1 秒计算一次原始速度
+    speedTimer = setInterval(calculateSpeed, 1000);
 
-    throughputServer.on('error', (err) => {
-      resolve(`启动失败: ${err.message}`);
-    });
+    if (protocol === 'tcp') {
+      startTcpServer(port, resolve);
+    } else if (protocol === 'udp') {
+      startUdpServer(port, resolve);
+    } else {
+      resolve('错误：未知的协议');
+    }
   });
 });
 
-// 启动客户端并开始测试
-ipcMain.on('net:tp-client-start', (event, { ip, port }) => {
+// --- Speed Calculation ---
+function calculateSpeed() {
+  const now = Date.now();
+  const duration = (now - lastCheckTime) / 1000;
+
+  if (duration >= 1) {
+    // 发送原始的 1 秒速率
+    const speedMbps = ((totalBytesReceived * 8) / (1024 * 1024)) / duration; // Mbps
+    mainWindow.webContents.send('tp-data', speedMbps.toFixed(2));
+    totalBytesReceived = 0;
+    lastCheckTime = now;
+  }
+}
+
+// --- Client Logic ---
+let testing = false;
+
+function startTcpClient(ip, port) {
   throughputSocket = new net.Socket();
-  const chunkSize = 64 * 1024;
+  const chunkSize = 64 * 1024; // 64KB
   const buffer = Buffer.alloc(chunkSize, 'x');
-  let bytesSent = 0;
-  let lastCheck = Date.now();
-  let testing = true;
 
   throughputSocket.connect(port, ip, () => {
-    mainWindow.webContents.send('tp-log', `已连接到 ${ip}:${port}，开始发送数据...`);
+    mainWindow.webContents.send('tp-log', `已连接到 ${ip}:${port} (TCP)，开始发送数据...`);
 
     function write() {
       if (!testing) return;
       let ok = true;
       do {
         ok = throughputSocket.write(buffer);
-        bytesSent += chunkSize;
       } while (ok && testing);
 
       if (testing) throughputSocket.once('drain', write);
     }
     write();
-
-    const timer = setInterval(() => {
-      if (!testing) {
-        clearInterval(timer);
-        return;
-      }
-      const now = Date.now();
-      const duration = (now - lastCheck) / 1000;
-      if (duration >= 1) {
-        const speedMbps = ((bytesSent * 8) / (1024 * 1024)) / duration;
-        mainWindow.webContents.send('tp-data', speedMbps.toFixed(2));
-        bytesSent = 0;
-        lastCheck = now;
-      }
-    }, 1000);
   });
 
   throughputSocket.on('error', (err) => {
     testing = false;
-    mainWindow.webContents.send('tp-log', `连接错误: ${err.message}`);
+    mainWindow.webContents.send('tp-log', `TCP 连接错误: ${err.message}`);
   });
 
-  ipcMain.once('net:tp-stop', () => {
+  throughputSocket.on('close', () => {
     testing = false;
-    if (throughputSocket) throughputSocket.end();
-    mainWindow.webContents.send('tp-log', '测试已停止');
+    mainWindow.webContents.send('tp-log', `TCP 连接已关闭`);
   });
+}
+
+function startUdpClient(ip, port, bandwidthMbps, packetSize) {
+  const buffer = Buffer.alloc(packetSize, 'x');
+
+  const targetBitsPerSecond = bandwidthMbps * 1024 * 1024;
+  const bitsPerPacket = packetSize * 8;
+  const packetsPerSecond = targetBitsPerSecond / bitsPerPacket;
+
+  const intervalMs = Math.max(1, 1000 / packetsPerSecond);
+
+  udpClient = dgram.createSocket('udp4');
+  mainWindow.webContents.send('tp-log', `已启动 UDP 客户端。目标: ${ip}:${port}，速率: ${bandwidthMbps}Mbps，间隔: ${intervalMs.toFixed(2)}ms`);
+
+  udpClientTimer = setInterval(() => {
+    if (!testing) {
+      clearInterval(udpClientTimer);
+      return;
+    }
+    udpClient.send(buffer, port, ip, (err) => {
+      if (err) {
+        mainWindow.webContents.send('tp-log', `UDP 发送错误: ${err.message}`);
+        testing = false;
+        clearInterval(udpClientTimer);
+      }
+    });
+  }, intervalMs);
+
+  udpClient.on('error', (err) => {
+    testing = false;
+    clearInterval(udpClientTimer);
+    mainWindow.webContents.send('tp-log', `UDP Client 错误: ${err.message}`);
+  });
+}
+
+
+// 启动客户端
+ipcMain.on('net:tp-client-start', (event, config) => {
+  testing = true;
+  const { ip, port, protocol, bandwidth, size } = config;
+
+  if (throughputSocket) throughputSocket.end();
+  if (udpClientTimer) clearInterval(udpClientTimer);
+  if (udpClient) udpClient.close(() => udpClient = null);
+
+  if (protocol === 'tcp') {
+    startTcpClient(ip, port);
+  } else if (protocol === 'udp') {
+    startUdpClient(ip, port, bandwidth, size);
+  }
+});
+
+ipcMain.on('net:tp-stop', () => {
+  testing = false;
+  if (speedTimer) clearInterval(speedTimer);
+  if (throughputServer) throughputServer.close();
+  if (udpServer) udpServer.close();
+  if (throughputSocket) throughputSocket.end();
+  if (udpClientTimer) clearInterval(udpClientTimer);
+  if (udpClient) udpClient.close();
+
+  throughputServer = null;
+  udpServer = null;
+  throughputSocket = null;
+  udpClient = null;
+  udpClientTimer = null;
+  speedTimer = null;
+
+  mainWindow.webContents.send('tp-log', '测试已停止');
 });
 
 app.whenReady().then(createWindow);
