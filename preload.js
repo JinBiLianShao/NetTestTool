@@ -3,15 +3,15 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   // System / Info
   getInterfaces: () => ipcRenderer.invoke('net:interfaces'),
-  
+
   // Ping
-  startPing: (target) => ipcRenderer.send('net:ping-start', target),
+  startPing: (config) => ipcRenderer.send('net:ping-start', config), // 接收配置对象
   stopPing: () => ipcRenderer.send('net:ping-stop'),
   onPingReply: (callback) => ipcRenderer.on('ping-reply', (_, data) => callback(data)),
-  
+
   // ARP
   getArp: () => ipcRenderer.invoke('net:arp'),
-  
+
   // Throughput
   startServer: (port) => ipcRenderer.invoke('net:tp-server', port),
   startClient: (config) => ipcRenderer.send('net:tp-client-start', config),

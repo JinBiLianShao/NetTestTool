@@ -12,7 +12,8 @@
     "build:linux": "electron-builder --linux"
   },
   "dependencies": {
-    "iconv-lite": "^0.6.3"
+    "cnpm": "^9.4.0",
+    "iconv-lite": "^0.7.0"
   },
   "devDependencies": {
     "app-builder-lib": "^26.0.12",

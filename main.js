@@ -1,9 +1,9 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const { spawn, exec } = require('child_process');
+const { exec } = require('child_process');
 const os = require('os');
 const net = require('net');
-const iconv = require('iconv-lite'); // 必须安装: npm install iconv-lite
+const iconv = require('iconv-lite');
 
 let mainWindow;
 
@@ -20,10 +20,10 @@ function createWindow() {
   mainWindow.loadFile('index.html');
 }
 
-// === 工具函数：解决 Windows 命令行中文乱码 ===
+// === 工具函数：解决 Windows 命令行中文乱码 (主要用于 ARP) ===
 function decodeOutput(data) {
-  // Windows 中文版 CMD 通常是 CP936 (GBK)，Mac/Linux 是 UTF-8
   const isWin = os.platform() === 'win32';
+  // ARP 命令默认使用 CP936 解码
   return isWin ? iconv.decode(data, 'cp936') : data.toString();
 }
 
@@ -33,7 +33,6 @@ ipcMain.handle('net:interfaces', () => {
   const results = [];
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
-      // 仅显示 IPv4 且非内部地址
       if (iface.family === 'IPv4' && !iface.internal) {
         results.push({
           name: name,
@@ -47,48 +46,99 @@ ipcMain.handle('net:interfaces', () => {
   return results;
 });
 
-// === 2. Ping 测试 (ICMP) ===
-let pingProcess = null;
-ipcMain.on('net:ping-start', (event, target) => {
-  if (pingProcess) pingProcess.kill(); // 防止多重开启
+// === 2. Ping 测试 (ICMP) - 修复中文解析和间隔问题 ===
+let pingTimer = null;
 
-  const isWin = os.platform() === 'win32';
-  const args = isWin ? ['-t', target] : ['-i', '1', target]; // -t: 持续 Ping
-  
-  pingProcess = spawn('ping', args);
+ipcMain.on('net:ping-start', (event, config) => {
+  if (pingTimer) clearInterval(pingTimer);
 
-  pingProcess.stdout.on('data', (data) => {
-    const text = decodeOutput(data);
-    mainWindow.webContents.send('ping-reply', text);
-  });
+  const { target, interval, size } = config;
+  const intervalMs = Math.max(100, interval * 1000);
 
-  pingProcess.stderr.on('data', (data) => {
-    mainWindow.webContents.send('ping-reply', `Error: ${decodeOutput(data)}`);
-  });
-  
-  pingProcess.on('close', () => {
-    mainWindow.webContents.send('ping-reply', '\n--- Ping 已停止 ---');
-  });
+  const logHeader = `开始 Ping ${target} (间隔: ${interval}s, 包大小: ${size} bytes)...\n`;
+  mainWindow.webContents.send('ping-reply', logHeader);
+  mainWindow.webContents.send('ping-reply', `[提示] 启用原生 Ping 命令，强制英文环境解析 TTL/时间，精确间隔 (${intervalMs}ms)。\n`);
+
+  pingTimer = setInterval(() => {
+
+    let command;
+    let decode_encoding = 'utf8'; // Linux/macOS 默认 UTF8
+
+    if (os.platform() === 'win32') {
+      // **核心修复：** 强制使用 cmd.exe /C chcp 437 来确保英文输出 (Code Page 437 is US English)
+      command = `cmd.exe /C "chcp 437 && ping -n 1 -l ${size} ${target}"`;
+      decode_encoding = 'cp437'; // 必须使用 CP437 解码
+    } else {
+      // Linux/macOS
+      command = `ping -c 1 -s ${size} ${target}`;
+    }
+
+    // Windows 上环境变量可能干扰 chcp 437 的效果，所以我们只在非 Windows 上设置。
+    const env = os.platform() === 'win32' ? process.env : { ...process.env, LC_ALL: 'C', LANG: 'C' };
+
+    // 必须使用 encoding: 'binary' 来捕获原始字节流
+    exec(command, { encoding: 'binary', env, timeout: 5000 }, (err, stdout, stderr) => {
+      let replyText;
+
+      const outputBuffer = Buffer.from(stdout, 'binary');
+      const errorBuffer = Buffer.from(stderr, 'binary');
+
+      // 使用正确的编码进行解码
+      const output = iconv.decode(outputBuffer, decode_encoding);
+      const errorOutput = iconv.decode(errorBuffer, decode_encoding);
+
+      if (err) {
+        // 检查常见的超时/不可达错误（英文输出）
+        if (output.includes('Request timed out') || output.includes('Destination host unreachable')) {
+          replyText = `请求超时或目标不可达: ${target}\n`;
+        } else {
+          // 可能是 DNS 失败或其他错误
+          replyText = `Ping 发生错误: ${output || errorOutput || err.message}\n`;
+        }
+      } else {
+        // 使用正则表达式解析英文 Ping 输出
+        const timeMatch = output.match(/time=(\d+)ms/i);
+        const ttlMatch = output.match(/TTL=(\d+)/i);
+        const bytesMatch = output.match(/Bytes=(\d+)|bytes=(\d+)/i);
+
+        const time = timeMatch ? `${timeMatch[1]}ms` : 'N/A';
+        const ttl = ttlMatch ? ttlMatch[1] : 'N/A';
+        // Bytes 匹配可能会有大小写，需要处理
+        const bytes = bytesMatch ? (bytesMatch[1] || bytesMatch[2] || size) : size;
+
+        // 检查是否成功收到回复 (英文输出: 'Reply from' 或 'transmitted, 1 received')
+        if (output.includes('Reply from') || output.includes('transmitted, 1 received')) {
+          replyText = `来自 ${target} 的回复：字节=${bytes} 时间=${time} TTL=${ttl}\n`;
+        } else {
+          // 仍然失败或无法解析
+          replyText = `请求超时或目标不可达: ${target}\n`;
+        }
+      }
+      mainWindow.webContents.send('ping-reply', replyText);
+    });
+  }, intervalMs);
 });
 
 ipcMain.on('net:ping-stop', () => {
-  if (pingProcess) {
-    pingProcess.kill();
-    pingProcess = null;
+  if (pingTimer) {
+    clearInterval(pingTimer);
+    pingTimer = null;
+    mainWindow.webContents.send('ping-reply', '\n--- Ping 已停止 ---');
   }
 });
 
-// === 3. ARP 表查询 ===
+// === 3. ARP 表查询 (保持不变) ===
 ipcMain.handle('net:arp', async () => {
   return new Promise((resolve) => {
     exec('arp -a', { encoding: 'binary' }, (err, stdout, stderr) => {
+      // ARP 命令输出通常是中文，使用 CP936 解码
       if (err) return resolve(`Error: ${decodeOutput(Buffer.from(stderr, 'binary'))}`);
       resolve(decodeOutput(Buffer.from(stdout, 'binary')));
     });
   });
 });
 
-// === 4. 吞吐量测试 (TCP Throughput) ===
+// === 4. 吞吐量测试 (TCP Throughput) (保持不变) ===
 let throughputServer = null;
 let throughputSocket = null;
 
@@ -96,9 +146,9 @@ let throughputSocket = null;
 ipcMain.handle('net:tp-server', (event, port) => {
   return new Promise((resolve) => {
     if (throughputServer) throughputServer.close();
-    
+
     throughputServer = net.createServer((socket) => {
-      socket.on('data', () => {}); // 仅接收，不做处理，消耗带宽
+      socket.on('data', () => {});
     });
 
     throughputServer.listen(port, '0.0.0.0', () => {
@@ -114,7 +164,7 @@ ipcMain.handle('net:tp-server', (event, port) => {
 // 启动客户端并开始测试
 ipcMain.on('net:tp-client-start', (event, { ip, port }) => {
   throughputSocket = new net.Socket();
-  const chunkSize = 64 * 1024; // 64KB per chunk
+  const chunkSize = 64 * 1024;
   const buffer = Buffer.alloc(chunkSize, 'x');
   let bytesSent = 0;
   let lastCheck = Date.now();
@@ -122,8 +172,7 @@ ipcMain.on('net:tp-client-start', (event, { ip, port }) => {
 
   throughputSocket.connect(port, ip, () => {
     mainWindow.webContents.send('tp-log', `已连接到 ${ip}:${port}，开始发送数据...`);
-    
-    // 循环写入数据
+
     function write() {
       if (!testing) return;
       let ok = true;
@@ -131,12 +180,11 @@ ipcMain.on('net:tp-client-start', (event, { ip, port }) => {
         ok = throughputSocket.write(buffer);
         bytesSent += chunkSize;
       } while (ok && testing);
-      
+
       if (testing) throughputSocket.once('drain', write);
     }
     write();
 
-    // 定时计算速度
     const timer = setInterval(() => {
       if (!testing) {
         clearInterval(timer);
@@ -145,7 +193,7 @@ ipcMain.on('net:tp-client-start', (event, { ip, port }) => {
       const now = Date.now();
       const duration = (now - lastCheck) / 1000;
       if (duration >= 1) {
-        const speedMbps = ((bytesSent * 8) / (1024 * 1024)) / duration; // Mbps
+        const speedMbps = ((bytesSent * 8) / (1024 * 1024)) / duration;
         mainWindow.webContents.send('tp-data', speedMbps.toFixed(2));
         bytesSent = 0;
         lastCheck = now;
@@ -158,7 +206,6 @@ ipcMain.on('net:tp-client-start', (event, { ip, port }) => {
     mainWindow.webContents.send('tp-log', `连接错误: ${err.message}`);
   });
 
-  // 监听前端停止指令
   ipcMain.once('net:tp-stop', () => {
     testing = false;
     if (throughputSocket) throughputSocket.end();

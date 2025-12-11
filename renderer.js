@@ -1,10 +1,11 @@
+// renderer.js
 // === Tab 切换 ===
 function showTab(id) {
     document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.nav li').forEach(el => el.classList.remove('active'));
     document.getElementById(id).classList.add('active');
     event.currentTarget.classList.add('active');
-    
+
     if(id === 'info') loadInterfaces();
 }
 
@@ -12,7 +13,7 @@ function showTab(id) {
 async function loadInterfaces() {
     const list = document.getElementById('interface-list');
     const interfaces = await window.api.getInterfaces();
-    
+
     list.innerHTML = interfaces.map(iface => `
         <div class="card">
             <h3 style="color: #e14eca">${iface.name}</h3>
@@ -28,10 +29,15 @@ let isPinging = false;
 function togglePing() {
     const btn = document.querySelector('#ping .btn-primary');
     const target = document.getElementById('ping-target').value;
-    
+    // 获取新增的配置值
+    const interval = parseFloat(document.getElementById('ping-interval').value) || 1;
+    const size = parseInt(document.getElementById('ping-size').value) || 32;
+
     if (!isPinging) {
-        document.getElementById('ping-output').textContent = `开始 Ping ${target}...\n`;
-        window.api.startPing(target);
+        // 更新输出提示，包含间隔和包大小
+        document.getElementById('ping-output').textContent = `开始 Ping ${target} (间隔: ${interval}s, 包大小: ${size} bytes)...\n`;
+        // 传递配置对象给后端
+        window.api.startPing({ target, interval, size });
         btn.textContent = "停止 Ping";
         btn.style.backgroundColor = "#ff4444";
     } else {
@@ -100,7 +106,7 @@ function toggleClient() {
         window.api.startClient({ ip, port: 5201 });
         btn.textContent = "停止测试";
         btn.style.background = "#ff4444";
-        
+
         // 重置图表
         chart.data.labels = [];
         chart.data.datasets[0].data = [];

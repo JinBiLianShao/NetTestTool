@@ -7,64 +7,67 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="app-container">
-        <div class="sidebar">
-            <div class="brand">NetTool 🛠️</div>
-            <ul class="nav">
-                <li class="active" onclick="showTab('info')">网络信息</li>
-                <li onclick="showTab('ping')">Ping 测试</li>
-                <li onclick="showTab('arp')">ARP 表</li>
-                <li onclick="showTab('throughput')">带宽吞吐量</li>
-            </ul>
-        </div>
-
-        <div class="main-content">
-            
-            <div id="info" class="tab-pane active">
-                <h2>本机网络环境</h2>
-                <div id="interface-list" class="card-grid">
-                    </div>
-            </div>
-
-            <div id="ping" class="tab-pane">
-                <h2>ICMP / Ping 测试</h2>
-                <div class="control-bar">
-                    <input type="text" id="ping-target" value="www.baidu.com" placeholder="IP 或 域名">
-                    <button class="btn-primary" onclick="togglePing()">开始 Ping</button>
-                </div>
-                <div class="console-output" id="ping-output"></div>
-            </div>
-
-            <div id="arp" class="tab-pane">
-                <h2>ARP 缓存表</h2>
-                <button class="btn-secondary" onclick="refreshArp()">刷新 ARP</button>
-                <div class="console-output" id="arp-output">等待获取...</div>
-            </div>
-
-            <div id="throughput" class="tab-pane">
-                <h2>TCP 吞吐量测试</h2>
-                
-                <div class="tp-controls">
-                    <div class="card">
-                        <h3>我是接收端 (Server)</h3>
-                        <button onclick="startServer()">启动服务 (Port 5201)</button>
-                        <p id="server-status" class="status-text">未启动</p>
-                    </div>
-                    <div class="card">
-                        <h3>我是发送端 (Client)</h3>
-                        <input type="text" id="tp-ip" placeholder="服务端 IP" value="127.0.0.1">
-                        <button id="btn-tp-client" onclick="toggleClient()">开始测试</button>
-                    </div>
-                </div>
-
-                <div class="chart-container">
-                    <canvas id="speedChart"></canvas>
-                </div>
-                <div id="tp-log-output"></div>
-            </div>
-
-        </div>
+<div class="app-container">
+    <div class="sidebar">
+        <div class="brand">NetTool 🛠️</div>
+        <ul class="nav">
+            <li class="active" onclick="showTab('info')">网络信息</li>
+            <li onclick="showTab('ping')">Ping 测试</li>
+            <li onclick="showTab('arp')">ARP 表</li>
+            <li onclick="showTab('throughput')">带宽吞吐量</li>
+        </ul>
     </div>
-    <script src="renderer.js"></script>
+
+    <div class="main-content">
+
+        <div id="info" class="tab-pane active">
+            <h2>本机网络环境</h2>
+            <div id="interface-list" class="card-grid">
+            </div>
+        </div>
+
+        <div id="ping" class="tab-pane">
+            <h2>ICMP / Ping 测试</h2>
+            <div class="control-bar">
+                <input type="text" id="ping-target" value="127.0.0.1" placeholder="IP 或 域名">
+                <input type="number" id="ping-interval" value="0.5" min="0.1" step="0.1" placeholder="间隔 (秒)">
+                <input type="number" id="ping-size" value="32" min="1" placeholder="包大小 (字节)">
+
+                <button class="btn-primary" onclick="togglePing()">开始 Ping</button>
+            </div>
+            <div class="console-output" id="ping-output"></div>
+        </div>
+
+        <div id="arp" class="tab-pane">
+            <h2>ARP 缓存表</h2>
+            <button class="btn-secondary" onclick="refreshArp()">刷新 ARP</button>
+            <div class="console-output" id="arp-output">等待获取...</div>
+        </div>
+
+        <div id="throughput" class="tab-pane">
+            <h2>TCP 吞吐量测试</h2>
+
+            <div class="tp-controls">
+                <div class="card">
+                    <h3>我是接收端 (Server)</h3>
+                    <button onclick="startServer()">启动服务 (Port 5201)</button>
+                    <p id="server-status" class="status-text">未启动</p>
+                </div>
+                <div class="card">
+                    <h3>我是发送端 (Client)</h3>
+                    <input type="text" id="tp-ip" placeholder="服务端 IP" value="127.0.0.1">
+                    <button id="btn-tp-client" onclick="toggleClient()">开始测试</button>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <canvas id="speedChart"></canvas>
+            </div>
+            <div id="tp-log-output"></div>
+        </div>
+
+    </div>
+</div>
+<script src="renderer.js"></script>
 </body>
 </html>
