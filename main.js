@@ -23,7 +23,6 @@ function createWindow() {
 // === 工具函数：解决 Windows 命令行中文乱码 (主要用于 ARP) ===
 function decodeOutput(data) {
   const isWin = os.platform() === 'win32';
-  // ARP 命令默认使用 CP936 解码
   return isWin ? iconv.decode(data, 'cp936') : data.toString();
 }
 
@@ -62,10 +61,10 @@ ipcMain.on('net:ping-start', (event, config) => {
   pingTimer = setInterval(() => {
 
     let command;
-    let decode_encoding = 'utf8'; // Linux/macOS 默认 UTF8
+    let decode_encoding = 'utf8';
 
     if (os.platform() === 'win32') {
-      // **核心修复：** 强制使用 cmd.exe /C chcp 437 来确保英文输出 (Code Page 437 is US English)
+      // 核心修复: 强制使用 cmd.exe /C chcp 437 来确保英文输出 (Code Page 437 is US English)
       command = `cmd.exe /C "chcp 437 && ping -n 1 -l ${size} ${target}"`;
       decode_encoding = 'cp437'; // 必须使用 CP437 解码
     } else {
@@ -92,18 +91,28 @@ ipcMain.on('net:ping-start', (event, config) => {
         if (output.includes('Request timed out') || output.includes('Destination host unreachable')) {
           replyText = `请求超时或目标不可达: ${target}\n`;
         } else {
-          // 可能是 DNS 失败或其他错误
           replyText = `Ping 发生错误: ${output || errorOutput || err.message}\n`;
         }
       } else {
-        // 使用正则表达式解析英文 Ping 输出
-        const timeMatch = output.match(/time=(\d+)ms/i);
+        // === 时间解析修复 START ===
+        const lessThanOneMatch = output.match(/time<1ms/i);
+        const regularTimeMatch = output.match(/time=(\d+)ms/i);
+
+        let time;
+        if (lessThanOneMatch) {
+          time = '<1ms'; // 匹配 time<1ms
+        } else if (regularTimeMatch) {
+          time = `${regularTimeMatch[1]}ms`; // 匹配 time=Xms
+        } else {
+          time = 'N/A'; // 其他未匹配情况
+        }
+        // === 时间解析修复 END ===
+
+        // TTL 和 Bytes 解析保持不变
         const ttlMatch = output.match(/TTL=(\d+)/i);
         const bytesMatch = output.match(/Bytes=(\d+)|bytes=(\d+)/i);
 
-        const time = timeMatch ? `${timeMatch[1]}ms` : 'N/A';
         const ttl = ttlMatch ? ttlMatch[1] : 'N/A';
-        // Bytes 匹配可能会有大小写，需要处理
         const bytes = bytesMatch ? (bytesMatch[1] || bytesMatch[2] || size) : size;
 
         // 检查是否成功收到回复 (英文输出: 'Reply from' 或 'transmitted, 1 received')
@@ -131,7 +140,6 @@ ipcMain.on('net:ping-stop', () => {
 ipcMain.handle('net:arp', async () => {
   return new Promise((resolve) => {
     exec('arp -a', { encoding: 'binary' }, (err, stdout, stderr) => {
-      // ARP 命令输出通常是中文，使用 CP936 解码
       if (err) return resolve(`Error: ${decodeOutput(Buffer.from(stderr, 'binary'))}`);
       resolve(decodeOutput(Buffer.from(stdout, 'binary')));
     });
