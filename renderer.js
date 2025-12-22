@@ -3,6 +3,7 @@
 // ==================== 全局变量 ====================
 let pingChart, speedChart;
 let isPinging = false;
+let isScanning = false;
 let isClientRunning = false;
 let isServerRunning = false;
 
@@ -13,6 +14,9 @@ let pingStats = {
     times: [],
     lastUpdateTime: Date.now()
 };
+
+// 扫描统计数据
+let scanDevices = [];
 
 // 吞吐量统计数据
 let speedHistory = [];
@@ -33,6 +37,7 @@ function showTab(id) {
     event.currentTarget.classList.add('active');
 
     if (id === 'info') loadInterfaces();
+    if (id === 'scan') loadScanInterfaces();
     if (id === 'throughput') toggleUdpConfig();
 }
 
@@ -166,7 +171,188 @@ async function refreshArp() {
     }
 }
 
-// ==================== 4. 吞吐量测试 ====================
+// ==================== 4. 网段扫描 ====================
+
+// 加载网络接口到下拉列表
+async function loadScanInterfaces() {
+    const select = document.getElementById('scan-interface');
+    try {
+        const interfaces = await window.api.getInterfaces();
+        select.innerHTML = interfaces.map(iface =>
+            `<option value="${iface.ip}|${iface.netmask}">${iface.name} (${iface.ip})</option>`
+        ).join('');
+    } catch (error) {
+        select.innerHTML = '<option value="">加载失败</option>';
+    }
+}
+
+// 开始/停止扫描
+function toggleScan() {
+    const btn = document.getElementById('btn-scan');
+    const select = document.getElementById('scan-interface');
+
+    if (!isScanning) {
+        const value = select.value;
+        if (!value) {
+            alert('请选择网络接口!');
+            return;
+        }
+
+        const [ip, netmask] = value.split('|');
+
+        // 重置数据
+        scanDevices = [];
+        updateScanStats(0, 0, 0);
+
+        // 清空设备列表
+        const deviceList = document.getElementById('device-list');
+        deviceList.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 20px;">扫描中...</td></tr>';
+
+        // 显示进度条
+        document.getElementById('scan-progress').style.display = 'block';
+
+        // 开始扫描
+        window.api.startScan({ ip, netmask });
+        btn.textContent = '停止扫描';
+        btn.style.background = 'linear-gradient(135deg, var(--danger) 0%, #c0392b 100%)';
+        isScanning = true;
+    } else {
+        window.api.stopScan();
+        btn.textContent = '开始扫描';
+        btn.style.background = '';
+        isScanning = false;
+    }
+}
+
+// 处理扫描状态更新
+window.api.onScanStatus((data) => {
+    const { status, message, total, current, found } = data;
+
+    // 更新进度文本
+    document.getElementById('scan-progress-text').textContent = message || '扫描中...';
+
+    // 更新状态文本
+    const statusMap = {
+        calculating: '计算中',
+        scanning: '扫描中',
+        completed: '完成',
+        stopped: '已停止',
+        error: '错误'
+    };
+    document.getElementById('scan-status-text').textContent = statusMap[status] || '就绪';
+
+    // 更新统计
+    if (total !== undefined && current !== undefined) {
+        updateScanStats(total, current, found || 0);
+
+        // 更新进度条
+        const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+        document.getElementById('scan-progress-percent').textContent = percent + '%';
+        document.getElementById('scan-progress-bar').style.width = percent + '%';
+    }
+
+    // 扫描完成或停止
+    if (status === 'completed' || status === 'stopped' || status === 'error') {
+        isScanning = false;
+        const btn = document.getElementById('btn-scan');
+        btn.textContent = '开始扫描';
+        btn.style.background = '';
+
+        // 3秒后隐藏进度条
+        setTimeout(() => {
+            document.getElementById('scan-progress').style.display = 'none';
+        }, 3000);
+
+        // 如果没有发现设备
+        if (scanDevices.length === 0) {
+            const deviceList = document.getElementById('device-list');
+            deviceList.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 40px;">未发现在线设备</td></tr>';
+        }
+    }
+
+    // 错误处理
+    if (status === 'error' && data.error) {
+        alert('扫描错误: ' + data.error);
+    }
+});
+
+// 处理发现新设备
+window.api.onScanDeviceFound((device) => {
+    scanDevices.push(device);
+    addDeviceToTable(device, scanDevices.length);
+    updateDeviceCount();
+});
+
+// 添加设备到表格
+function addDeviceToTable(device, index) {
+    const deviceList = document.getElementById('device-list');
+
+    // 如果是第一个设备，清空提示信息
+    if (index === 1) {
+        deviceList.innerHTML = '';
+    }
+
+    const row = document.createElement('tr');
+    row.className = 'new-device';
+    row.innerHTML = `
+        <td class="device-index">${index}</td>
+        <td class="device-ip">${device.ip}</td>
+        <td class="device-mac">${device.mac}</td>
+        <td class="device-vendor">${device.vendor}</td>
+        <td class="device-time">${device.time}</td>
+        <td>
+            <button class="device-action-btn" onclick="pingDevice('${device.ip}')">Ping</button>
+        </td>
+    `;
+
+    deviceList.appendChild(row);
+}
+
+// 更新扫描统计
+function updateScanStats(total, current, found) {
+    document.getElementById('scan-total').textContent = total;
+    document.getElementById('scan-current').textContent = current;
+    document.getElementById('scan-found').textContent = found;
+}
+
+// 更新设备计数
+function updateDeviceCount() {
+    document.getElementById('device-count').textContent = scanDevices.length;
+}
+
+// Ping单个设备
+function pingDevice(ip) {
+    showTab('ping');
+    document.getElementById('ping-target').value = ip;
+    // 不自动开始，让用户点击
+}
+
+// 导出设备列表
+function exportDeviceList() {
+    if (scanDevices.length === 0) {
+        alert('没有可导出的设备!');
+        return;
+    }
+
+    // 生成CSV内容
+    const header = 'IP地址,MAC地址,厂商,响应时间\n';
+    const rows = scanDevices.map(d =>
+        `${d.ip},${d.mac},${d.vendor},${d.time}`
+    ).join('\n');
+
+    const csv = header + rows;
+
+    // 创建下载链接
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `network_scan_${new Date().getTime()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+}
+
+// ==================== 5. 吞吐量测试 ====================
 
 // 切换UDP配置显示
 function toggleUdpConfig() {
@@ -456,6 +642,7 @@ function initCharts() {
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', () => {
     loadInterfaces();
+    loadScanInterfaces();
     initCharts();
     toggleUdpConfig();
 });
@@ -464,6 +651,9 @@ document.addEventListener('DOMContentLoaded', () => {
 window.addEventListener('beforeunload', () => {
     if (isPinging) {
         window.api.stopPing();
+    }
+    if (isScanning) {
+        window.api.stopScan();
     }
     if (isClientRunning) {
         window.api.stopClient();

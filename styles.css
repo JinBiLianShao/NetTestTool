@@ -526,3 +526,160 @@ button:active::before {
     from { opacity: 0; }
     to { opacity: 1; }
 }
+
+/* === Network Scan Styles === */
+.scan-progress {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 20px 0;
+    box-shadow: var(--shadow);
+}
+
+.progress-info {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    font-size: 14px;
+    color: var(--text-muted);
+}
+
+.progress-bar-container {
+    height: 8px;
+    background: var(--bg-input);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+}
+
+.progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent) 0%, var(--success) 100%);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+.device-list-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    padding: 25px;
+    margin: 25px 0;
+    box-shadow: var(--shadow);
+}
+
+.device-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.device-list-header h3 {
+    margin: 0;
+    font-size: 20px;
+    color: var(--success);
+}
+
+.device-table-wrapper {
+    overflow-x: auto;
+    border-radius: 8px;
+}
+
+.device-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.device-table thead {
+    background: var(--bg-input);
+}
+
+.device-table th {
+    padding: 12px 15px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-main);
+    border-bottom: 2px solid var(--border-color);
+}
+
+.device-table tbody tr {
+    border-bottom: 1px solid var(--border-color);
+    transition: all 0.2s ease;
+}
+
+.device-table tbody tr:hover {
+    background: rgba(225, 78, 202, 0.05);
+}
+
+.device-table tbody tr:last-child {
+    border-bottom: none;
+}
+
+.device-table td {
+    padding: 15px;
+    color: var(--text-main);
+}
+
+.device-table .device-ip {
+    font-family: 'Consolas', monospace;
+    color: var(--success);
+    font-weight: 600;
+}
+
+.device-table .device-mac {
+    font-family: 'Consolas', monospace;
+    color: var(--text-muted);
+}
+
+.device-table .device-vendor {
+    color: var(--text-main);
+}
+
+.device-table .device-time {
+    font-family: 'Consolas', monospace;
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.device-action-btn {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-input);
+    color: var(--text-main);
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+
+.device-action-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    transform: translateY(-1px);
+}
+
+/* 设备序号样式 */
+.device-table .device-index {
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+/* 新设备动画 */
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateX(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.device-table tbody tr.new-device {
+    animation: slideIn 0.4s ease;
+}

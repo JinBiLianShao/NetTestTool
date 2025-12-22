@@ -10,8 +10,8 @@ let mainWindow;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 750,
+    width: 1200,
+    height: 800,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -57,10 +57,9 @@ ipcMain.on('net:ping-start', (event, config) => {
 
   const logHeader = `开始 Ping ${target} (间隔: ${interval}s, 包大小: ${size} bytes)...\n`;
   mainWindow.webContents.send('ping-reply', logHeader);
-  mainWindow.webContents.send('ping-reply', `[提示] 启用原生 Ping 命令，强制英文环境解析 TTL/时间，精确间隔 (${intervalMs}ms)。\n`);
+  mainWindow.webContents.send('ping-reply', `[提示] 使用原生 Ping 命令，强制英文环境解析 TTL/时间，精确间隔 (${intervalMs}ms)。\n`);
 
   pingTimer = setInterval(() => {
-
     let command;
     let decode_encoding = 'utf8';
 
@@ -137,7 +136,241 @@ ipcMain.handle('net:arp', async () => {
 });
 
 // ==========================================================
-// === 4. TCP/UDP 吞吐量测试 (iperf 模式) ===
+// === 4. 网段扫描功能 (类似 CPing) ===
+// ==========================================================
+let scanInProgress = false;
+
+// 计算网段范围
+function calculateNetworkRange(ip, netmask) {
+  const ipParts = ip.split('.').map(Number);
+  const maskParts = netmask.split('.').map(Number);
+
+  const networkParts = ipParts.map((part, i) => part & maskParts[i]);
+  const broadcastParts = ipParts.map((part, i) => part | (~maskParts[i] & 255));
+
+  return {
+    start: networkParts.join('.'),
+    end: broadcastParts.join('.'),
+    networkParts,
+    broadcastParts
+  };
+}
+
+// 生成IP列表
+function generateIPList(networkParts, broadcastParts) {
+  const ips = [];
+
+  // 简化版：只扫描最后一个字节
+  for (let i = networkParts[3] + 1; i < broadcastParts[3]; i++) {
+    ips.push(`${networkParts[0]}.${networkParts[1]}.${networkParts[2]}.${i}`);
+  }
+
+  return ips;
+}
+
+// 快速Ping检测（超时时间短）
+function quickPing(ip) {
+  return new Promise((resolve) => {
+    const isWin = os.platform() === 'win32';
+    const command = isWin
+        ? `ping -n 1 -w 500 ${ip}`
+        : `ping -c 1 -W 1 ${ip}`;
+
+    exec(command, { timeout: 2000 }, (err, stdout) => {
+      if (err) {
+        resolve({ ip, online: false });
+      } else {
+        const online = stdout.includes('TTL=') || stdout.includes('ttl=') ||
+            stdout.includes('bytes from') || stdout.includes('Reply from');
+
+        // 提取响应时间
+        let time = 'N/A';
+        const timeMatch = stdout.match(/time[=<](\d+)ms|time=(\d+\.\d+)/i);
+        if (timeMatch) {
+          time = timeMatch[1] || timeMatch[2];
+          time = time + 'ms';
+        } else if (stdout.includes('time<1ms')) {
+          time = '<1ms';
+        }
+
+        resolve({ ip, online, time });
+      }
+    });
+  });
+}
+
+// 获取MAC地址和主机名
+async function getDeviceDetails(ip) {
+  return new Promise((resolve) => {
+    // 获取MAC地址（通过ARP）
+    exec('arp -a', { encoding: 'binary' }, (err, stdout) => {
+      let mac = 'N/A';
+      let vendor = '';
+
+      if (!err) {
+        const arpOutput = decodeOutput(Buffer.from(stdout, 'binary'));
+        const lines = arpOutput.split('\n');
+
+        for (const line of lines) {
+          if (line.includes(ip)) {
+            // Windows: 192.168.1.1    00-11-22-33-44-55
+            // Linux/Mac: 192.168.1.1 ether 00:11:22:33:44:55
+            const macMatch = line.match(/([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})/);
+            if (macMatch) {
+              mac = macMatch[0].toUpperCase().replace(/-/g, ':');
+              // 简化的厂商识别（基于MAC前缀）
+              vendor = getVendorFromMAC(mac);
+            }
+            break;
+          }
+        }
+      }
+
+      // 获取主机名（可选，可能较慢）
+      // 这里简化处理，不进行DNS反向解析
+      resolve({ mac, vendor, hostname: '' });
+    });
+  });
+}
+
+// 简化的厂商识别（基于MAC地址前缀）
+function getVendorFromMAC(mac) {
+  const prefix = mac.substring(0, 8).replace(/:/g, '').toUpperCase();
+
+  const vendors = {
+    '001122': 'CIMSYS Inc',
+    '0050F2': 'Microsoft',
+    '00155D': 'Microsoft',
+    '000C29': 'VMware',
+    '005056': 'VMware',
+    '0A0027': 'VirtualBox',
+    '080027': 'VirtualBox',
+    '001DD8': 'Hewlett Packard',
+    '001E68': 'Hewlett Packard',
+    '7054D9': 'Apple',
+    '001451': 'Apple',
+    'D89695': 'Apple',
+    '8863DF': 'Apple',
+    'F0D1A9': 'Apple',
+    '3C0754': 'Apple',
+    '44D884': 'Apple',
+    '001C42': 'Parallels',
+    '000D3A': 'D-Link',
+    'B0C090': 'Intel',
+    '000E0C': 'Intel',
+    'AC220B': 'Intel',
+    'F4B301': 'Realtek',
+    '001FC6': 'Realtek',
+    '00E04C': 'Realtek',
+  };
+
+  for (const [key, value] of Object.entries(vendors)) {
+    if (prefix.startsWith(key)) {
+      return value;
+    }
+  }
+
+  return 'Unknown';
+}
+
+// 开始网段扫描
+ipcMain.on('net:scan-start', async (event, config) => {
+  if (scanInProgress) {
+    mainWindow.webContents.send('scan-status', { error: '扫描正在进行中...' });
+    return;
+  }
+
+  scanInProgress = true;
+  const { ip, netmask } = config;
+
+  try {
+    mainWindow.webContents.send('scan-status', {
+      status: 'calculating',
+      message: '正在计算网段范围...'
+    });
+
+    // 计算网段
+    const range = calculateNetworkRange(ip, netmask);
+    const ipList = generateIPList(range.networkParts, range.broadcastParts);
+
+    mainWindow.webContents.send('scan-status', {
+      status: 'scanning',
+      message: `开始扫描 ${ipList.length} 个IP地址...`,
+      total: ipList.length,
+      current: 0
+    });
+
+    // 批量扫描（并发10个）
+    const batchSize = 10;
+    const results = [];
+
+    for (let i = 0; i < ipList.length; i += batchSize) {
+      const batch = ipList.slice(i, i + batchSize);
+      const batchResults = await Promise.all(batch.map(quickPing));
+
+      // 只处理在线设备
+      for (const result of batchResults) {
+        if (result.online) {
+          const details = await getDeviceDetails(result.ip);
+          results.push({
+            ip: result.ip,
+            time: result.time,
+            mac: details.mac,
+            vendor: details.vendor,
+            hostname: details.hostname
+          });
+
+          // 立即发送发现的设备
+          mainWindow.webContents.send('scan-device-found', {
+            ip: result.ip,
+            time: result.time,
+            mac: details.mac,
+            vendor: details.vendor
+          });
+        }
+      }
+
+      // 更新进度
+      mainWindow.webContents.send('scan-status', {
+        status: 'scanning',
+        message: `扫描中... ${Math.min(i + batchSize, ipList.length)}/${ipList.length}`,
+        total: ipList.length,
+        current: Math.min(i + batchSize, ipList.length),
+        found: results.length
+      });
+    }
+
+    // 扫描完成
+    mainWindow.webContents.send('scan-status', {
+      status: 'completed',
+      message: `扫描完成！发现 ${results.length} 台在线设备`,
+      total: ipList.length,
+      current: ipList.length,
+      found: results.length,
+      devices: results
+    });
+
+  } catch (error) {
+    mainWindow.webContents.send('scan-status', {
+      status: 'error',
+      error: error.message
+    });
+  } finally {
+    scanInProgress = false;
+  }
+});
+
+// 停止扫描
+ipcMain.on('net:scan-stop', () => {
+  scanInProgress = false;
+  mainWindow.webContents.send('scan-status', {
+    status: 'stopped',
+    message: '扫描已停止'
+  });
+});
+
+// ==========================================================
+// === 5. TCP/UDP 吞吐量测试 (iperf 模式) ===
 // ==========================================================
 let throughputServer = null;
 let throughputSocket = null;
@@ -294,7 +527,6 @@ function startUdpClient(ip, port, bandwidthMbps, packetSize) {
     mainWindow.webContents.send('tp-log', `UDP Client 错误: ${err.message}`);
   });
 }
-
 
 // 启动客户端
 ipcMain.on('net:tp-client-start', (event, config) => {
