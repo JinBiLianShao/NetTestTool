@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NetTestTool Pro</title>
     <script src="chart.js"></script>
     <link rel="stylesheet" href="styles.css">
@@ -11,54 +12,90 @@
     <div class="sidebar">
         <div class="brand">NetTool 🛠️</div>
         <ul class="nav">
-            <li class="active" onclick="showTab('info')">网络信息</li>
-            <li onclick="showTab('ping')">Ping 测试</li>
-            <li onclick="showTab('arp')">ARP 表</li>
-            <li onclick="showTab('throughput')">带宽吞吐量</li>
+            <li class="active" onclick="showTab('info')">📊 网络信息</li>
+            <li onclick="showTab('ping')">📡 Ping 测试</li>
+            <li onclick="showTab('arp')">🔍 ARP 表</li>
+            <li onclick="showTab('throughput')">⚡ 带宽吞吐量</li>
         </ul>
     </div>
 
     <div class="main-content">
-
+        <!-- 网络信息页面 -->
         <div id="info" class="tab-pane active">
             <h2>本机网络环境</h2>
             <div id="interface-list" class="card-grid">
+                <!-- 动态加载 -->
             </div>
         </div>
 
+        <!-- Ping测试页面 -->
         <div id="ping" class="tab-pane">
             <h2>ICMP / Ping 测试</h2>
-            <div class="control-bar input-group-row">
-                <div class="form-control">
-                    <label for="ping-target">目标地址 (IP/域名)</label>
-                    <input type="text" id="ping-target" value="127.0.0.1" placeholder="如 127.0.0.1 或 google.com">
-                </div>
-                <div class="form-control">
-                    <label for="ping-interval">间隔 (秒)</label>
-                    <input type="number" id="ping-interval" value="0.5" min="0.1" step="0.1" placeholder="0.1 ~ 60">
-                </div>
-                <div class="form-control">
-                    <label for="ping-size">包大小 (字节)</label>
-                    <input type="number" id="ping-size" value="32" min="1" placeholder="1 ~ 65500">
-                </div>
 
-                <button class="btn-primary" onclick="togglePing()">开始 Ping</button>
+            <div class="control-bar">
+                <div class="input-group-row">
+                    <div class="form-control">
+                        <label for="ping-target">目标地址 (IP/域名)</label>
+                        <input type="text" id="ping-target" value="127.0.0.1" placeholder="如 127.0.0.1 或 google.com">
+                    </div>
+                    <div class="form-control">
+                        <label for="ping-interval">间隔 (秒)</label>
+                        <input type="number" id="ping-interval" value="1" min="0.1" step="0.1" placeholder="0.1 ~ 60">
+                    </div>
+                    <div class="form-control">
+                        <label for="ping-size">包大小 (字节)</label>
+                        <input type="number" id="ping-size" value="32" min="1" placeholder="1 ~ 65500">
+                    </div>
+                    <button class="btn-primary" onclick="togglePing()">开始 Ping</button>
+                </div>
             </div>
+
+            <!-- 统计卡片 -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">已发送</div>
+                    <div class="stat-value" id="ping-sent">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">已接收</div>
+                    <div class="stat-value" id="ping-received">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">丢包率</div>
+                    <div class="stat-value" id="ping-loss">0%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">平均延迟</div>
+                    <div class="stat-value" id="ping-avg">0ms</div>
+                </div>
+            </div>
+
+            <!-- Ping图表 -->
+            <div class="chart-container">
+                <canvas id="pingChart"></canvas>
+            </div>
+
+            <!-- 控制台输出 -->
             <div class="console-output" id="ping-output"></div>
         </div>
 
+        <!-- ARP表页面 -->
         <div id="arp" class="tab-pane">
             <h2>ARP 缓存表</h2>
-            <button class="btn-secondary" onclick="refreshArp()">刷新 ARP</button>
+            <div class="control-bar">
+                <button class="btn-secondary" onclick="refreshArp()">🔄 刷新 ARP</button>
+            </div>
             <div class="console-output" id="arp-output">等待获取...</div>
         </div>
 
+        <!-- 吞吐量测试页面 -->
         <div id="throughput" class="tab-pane">
-            <h2>TCP/UDP 吞吐量测试 (iperf 模式)</h2>
+            <h2>TCP/UDP 吞吐量测试</h2>
 
+            <!-- 服务端和客户端配置 -->
             <div class="tp-controls">
                 <div class="card">
-                    <h3>我是接收端 (Server)</h3>
+                    <h3>🔵 接收端 (Server)</h3>
                     <div class="form-control">
                         <label for="tp-server-protocol">选择协议</label>
                         <select id="tp-server-protocol" class="protocol-select">
@@ -66,11 +103,14 @@
                             <option value="udp">UDP</option>
                         </select>
                     </div>
-                    <button onclick="startServer()">启动服务 (Port 5201)</button>
-                    <p id="server-status" class="status-text">未启动</p>
+                    <button class="btn-secondary" onclick="startServer()">启动服务 (Port 5201)</button>
+                    <p id="server-status" class="status-text">
+                        <span class="status-indicator inactive"></span>未启动
+                    </p>
                 </div>
+
                 <div class="card">
-                    <h3>我是发送端 (Client)</h3>
+                    <h3>🟢 发送端 (Client)</h3>
                     <div class="form-control">
                         <label for="tp-ip">服务端 IP</label>
                         <input type="text" id="tp-ip" placeholder="如 192.168.1.1" value="127.0.0.1">
@@ -82,7 +122,9 @@
                             <option value="udp">UDP</option>
                         </select>
                     </div>
-                    <div id="udp-config" style="margin-top: 15px; display: none;">
+
+                    <!-- UDP配置 -->
+                    <div id="udp-config" style="display: none;">
                         <h4>UDP 模式配置</h4>
                         <div class="form-control">
                             <label for="tp-udp-bandwidth">目标带宽 (Mbps)</label>
@@ -93,16 +135,39 @@
                             <input type="number" id="tp-udp-size" value="1470" min="1" placeholder="建议 1470 (以太网 MTU-IP头-UDP头)">
                         </div>
                     </div>
-                    <button id="btn-tp-client" onclick="toggleClient()">开始测试</button>
+
+                    <button class="btn-primary" id="btn-tp-client" onclick="toggleClient()">开始测试</button>
                 </div>
             </div>
 
+            <!-- 吞吐量统计卡片 -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">当前速率</div>
+                    <div class="stat-value" id="current-speed">0 Mbps</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">平均速率</div>
+                    <div class="stat-value" id="avg-speed">0 Mbps</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">峰值速率</div>
+                    <div class="stat-value" id="peak-speed">0 Mbps</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">传输时长</div>
+                    <div class="stat-value" id="test-duration">0s</div>
+                </div>
+            </div>
+
+            <!-- 速度图表 -->
             <div class="chart-container">
                 <canvas id="speedChart"></canvas>
             </div>
-            <div id="tp-log-output"></div>
-        </div>
 
+            <!-- 日志输出 -->
+            <div class="console-output" id="tp-log-output"></div>
+        </div>
     </div>
 </div>
 <script src="renderer.js"></script>
