@@ -1,4 +1,4 @@
-// renderer.js - 优化版本
+// renderer.js - 完整版本
 
 // ==================== 全局变量 ====================
 let pingChart, speedChart;
@@ -6,6 +6,8 @@ let isPinging = false;
 let isScanning = false;
 let isClientRunning = false;
 let isServerRunning = false;
+let isTransferServerRunning = false;
+let selectedFilePath = null;
 
 // Ping统计数据
 let pingStats = {
@@ -23,6 +25,10 @@ let speedHistory = [];
 let peakSpeed = 0;
 let testStartTime = null;
 let durationTimer = null;
+
+// 文件传输数据
+let transferHistory = [];
+let currentTransfer = null;
 
 // 配置常量
 const PING_CHART_MAX_POINTS = 50;  // Ping图表最多显示50个点
@@ -531,6 +537,349 @@ function resetThroughputStats() {
     document.getElementById('peak-speed').textContent = '0 Mbps';
     document.getElementById('test-duration').textContent = '0s';
 }
+
+// ==================== 6. 文件传输功能 ====================
+
+// 选择保存路径
+async function selectSavePath() {
+    const path = await window.api.selectSavePath();
+    if (path) {
+        document.getElementById('transfer-save-path').value = path;
+    }
+}
+
+// 处理文件选择
+function handleFileSelect() {
+    const fileInput = document.getElementById('transfer-file');
+    const file = fileInput.files[0];
+
+    if (file) {
+        selectedFilePath = file.path;
+        document.getElementById('transfer-file-display').value = file.name;
+
+        // 更新统计信息
+        const sizeInMB = (file.size / (1024 * 1024)).toFixed(2);
+        document.getElementById('current-file').textContent = file.name;
+        document.getElementById('file-size').textContent = sizeInMB + ' MB';
+    }
+}
+
+// 启动接收服务器
+async function startTransferServer() {
+    if (isTransferServerRunning) {
+        window.api.stopTransferServer();
+        return;
+    }
+
+    const savePath = document.getElementById('transfer-save-path').value;
+    if (!savePath) {
+        alert('请先选择保存路径！');
+        return;
+    }
+
+    const statusEl = document.getElementById('transfer-server-status');
+    const indicator = statusEl.querySelector('.status-indicator');
+
+    try {
+        const res = await window.api.startTransferServer({ port: 5202, savePath });
+
+        const isSuccess = !res.includes('失败');
+        indicator.className = `status-indicator ${isSuccess ? 'active' : 'inactive'}`;
+        statusEl.innerHTML = `<span class="status-indicator ${isSuccess ? 'active' : 'inactive'}"></span>${res}`;
+
+        isTransferServerRunning = isSuccess;
+
+        if (isSuccess) {
+            logTransfer('📥 接收服务已启动，等待文件...');
+        }
+    } catch (error) {
+        indicator.className = 'status-indicator inactive';
+        statusEl.innerHTML = `<span class="status-indicator inactive"></span>启动失败: ${error.message}`;
+        logTransfer('❌ 启动失败: ' + error.message);
+    }
+}
+
+// 发送文件
+function sendFile() {
+    const ip = document.getElementById('transfer-target-ip').value.trim();
+
+    if (!ip) {
+        alert('请输入目标IP地址！');
+        return;
+    }
+
+    if (!selectedFilePath) {
+        alert('请先选择要发送的文件！');
+        return;
+    }
+
+    // 开始发送
+    window.api.sendFile({
+        ip: ip,
+        port: 5202,
+        filePath: selectedFilePath
+    });
+
+    // 显示进度条
+    document.getElementById('transfer-progress').style.display = 'block';
+    document.getElementById('transfer-progress-text').textContent = '正在发送...';
+}
+
+// 日志输出
+function logTransfer(msg) {
+    const logOutput = document.getElementById('transfer-log-output');
+    const timestamp = new Date().toLocaleTimeString();
+    logOutput.textContent += `[${timestamp}] ${msg}\n`;
+    logOutput.scrollTop = logOutput.scrollHeight;
+}
+
+// 格式化文件大小
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+// 格式化剩余时间
+function formatETA(seconds) {
+    if (!isFinite(seconds) || seconds <= 0) return '--:--';
+
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+// 添加传输历史记录
+function addTransferHistory(record) {
+    transferHistory.unshift(record);
+    updateTransferHistoryTable();
+}
+
+// 更新传输历史表格
+function updateTransferHistoryTable() {
+    const tbody = document.getElementById('transfer-history');
+    document.getElementById('transfer-history-count').textContent = transferHistory.length;
+
+    if (transferHistory.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 40px;">暂无传输记录</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = transferHistory.map((record, index) => `
+        <tr>
+            <td>${index + 1}</td>
+            <td>${record.type === 'send' ? '📤 发送' : '📥 接收'}</td>
+            <td style="word-break: break-all;">${record.fileName}</td>
+            <td>${formatFileSize(record.fileSize)}</td>
+            <td style="font-family: 'Consolas', monospace;">${record.remoteIP}</td>
+            <td>${record.duration}s</td>
+            <td>
+                <span style="color: ${record.success ? 'var(--success)' : 'var(--danger)'};">
+                    ${record.success ? '✅ 成功' : '❌ 失败'}
+                </span>
+            </td>
+            <td style="font-size: 12px;">${record.time}</td>
+        </tr>
+    `).join('');
+}
+
+// 清空传输历史
+function clearTransferHistory() {
+    if (transferHistory.length === 0) return;
+
+    if (confirm('确定要清空所有传输历史吗？')) {
+        transferHistory = [];
+        updateTransferHistoryTable();
+        logTransfer('🗑️ 已清空传输历史');
+    }
+}
+
+// ==================== 文件传输事件监听 ====================
+
+// 监听日志消息
+window.api.onTransferLog((msg) => {
+    logTransfer(msg);
+});
+
+// 接收端 - 文件开始接收
+window.api.onFileTransferStart((data) => {
+    currentTransfer = {
+        type: 'receive',
+        fileName: data.fileName,
+        fileSize: data.fileSize,
+        sourceMD5: data.sourceMD5,
+        startTime: Date.now()
+    };
+
+    document.getElementById('transfer-progress').style.display = 'block';
+    document.getElementById('current-file').textContent = data.fileName;
+    document.getElementById('file-size').textContent = formatFileSize(data.fileSize);
+    document.getElementById('source-md5').textContent = data.sourceMD5;
+    document.getElementById('received-md5').textContent = '计算中...';
+    document.getElementById('md5-result').style.display = 'none';
+});
+
+// 接收端 - 进度更新
+window.api.onFileTransferProgress((data) => {
+    const { received, total, progress, speed } = data;
+
+    document.getElementById('transfer-progress-text').textContent = '正在接收...';
+    document.getElementById('transfer-progress-percent').textContent = progress + '%';
+    document.getElementById('transfer-progress-bar').style.width = progress + '%';
+    document.getElementById('transfer-speed').textContent = speed + ' MB/s';
+    document.getElementById('transfer-bytes').textContent = formatFileSize(received);
+    document.getElementById('transfer-total').textContent = formatFileSize(total);
+
+    // 计算预计剩余时间
+    const speedBytes = parseFloat(speed) * 1024 * 1024;
+    const remainingBytes = total - received;
+    const eta = speedBytes > 0 ? remainingBytes / speedBytes : 0;
+    document.getElementById('transfer-eta').textContent = formatETA(eta);
+});
+
+// 接收端 - 接收完成
+window.api.onFileTransferComplete((data) => {
+    const { fileName, fileSize, sourceMD5, receivedMD5, match, duration } = data;
+
+    // 更新进度为100%
+    document.getElementById('transfer-progress-percent').textContent = '100%';
+    document.getElementById('transfer-progress-bar').style.width = '100%';
+    document.getElementById('transfer-progress-text').textContent = match ? '✅ 接收完成' : '⚠️ MD5校验失败';
+
+    // 显示MD5值
+    document.getElementById('received-md5').textContent = receivedMD5;
+
+    // 显示MD5校验结果
+    const resultDiv = document.getElementById('md5-result');
+    resultDiv.style.display = 'block';
+
+    if (match) {
+        resultDiv.style.background = 'linear-gradient(135deg, rgba(0, 242, 195, 0.2) 0%, rgba(0, 234, 255, 0.1) 100%)';
+        resultDiv.style.color = 'var(--success)';
+        resultDiv.style.border = '2px solid var(--success)';
+        resultDiv.textContent = '✅ MD5校验通过 - 文件完整';
+    } else {
+        resultDiv.style.background = 'linear-gradient(135deg, rgba(255, 68, 68, 0.2) 0%, rgba(255, 107, 138, 0.1) 100%)';
+        resultDiv.style.color = 'var(--danger)';
+        resultDiv.style.border = '2px solid var(--danger)';
+        resultDiv.textContent = '❌ MD5校验失败 - 文件可能损坏';
+    }
+
+    // 添加到历史记录
+    addTransferHistory({
+        type: 'receive',
+        fileName: fileName,
+        fileSize: fileSize,
+        remoteIP: document.getElementById('transfer-target-ip').value || 'Unknown',
+        duration: duration,
+        success: match,
+        time: new Date().toLocaleString()
+    });
+
+    // 3秒后隐藏进度条
+    setTimeout(() => {
+        document.getElementById('transfer-progress').style.display = 'none';
+    }, 3000);
+});
+
+// 接收端 - 错误
+window.api.onFileTransferError((data) => {
+    document.getElementById('transfer-progress-text').textContent = '❌ 接收失败';
+    document.getElementById('transfer-progress-bar').style.background = 'var(--danger)';
+
+    setTimeout(() => {
+        document.getElementById('transfer-progress').style.display = 'none';
+        document.getElementById('transfer-progress-bar').style.background = '';
+    }, 3000);
+});
+
+// 发送端 - 开始发送
+window.api.onFileSendStart((data) => {
+    currentTransfer = {
+        type: 'send',
+        fileName: data.fileName,
+        fileSize: data.fileSize,
+        md5: data.md5,
+        startTime: Date.now()
+    };
+
+    document.getElementById('current-file').textContent = data.fileName;
+    document.getElementById('file-size').textContent = formatFileSize(data.fileSize);
+    document.getElementById('source-md5').textContent = data.md5;
+    document.getElementById('received-md5').textContent = '--';
+    document.getElementById('md5-result').style.display = 'none';
+});
+
+// 发送端 - 进度更新
+window.api.onFileSendProgress((data) => {
+    const { sent, total, progress, speed } = data;
+
+    document.getElementById('transfer-progress-text').textContent = '正在发送...';
+    document.getElementById('transfer-progress-percent').textContent = progress + '%';
+    document.getElementById('transfer-progress-bar').style.width = progress + '%';
+    document.getElementById('transfer-speed').textContent = speed + ' MB/s';
+    document.getElementById('transfer-bytes').textContent = formatFileSize(sent);
+    document.getElementById('transfer-total').textContent = formatFileSize(total);
+
+    // 计算预计剩余时间
+    const speedBytes = parseFloat(speed) * 1024 * 1024;
+    const remainingBytes = total - sent;
+    const eta = speedBytes > 0 ? remainingBytes / speedBytes : 0;
+    document.getElementById('transfer-eta').textContent = formatETA(eta);
+});
+
+// 发送端 - 发送完成
+window.api.onFileSendComplete((data) => {
+    const { fileName, fileSize, md5, duration } = data;
+
+    document.getElementById('transfer-progress-percent').textContent = '100%';
+    document.getElementById('transfer-progress-bar').style.width = '100%';
+    document.getElementById('transfer-progress-text').textContent = '✅ 发送完成';
+
+    // 显示成功消息
+    const resultDiv = document.getElementById('md5-result');
+    resultDiv.style.display = 'block';
+    resultDiv.style.background = 'linear-gradient(135deg, rgba(0, 242, 195, 0.2) 0%, rgba(0, 234, 255, 0.1) 100%)';
+    resultDiv.style.color = 'var(--success)';
+    resultDiv.style.border = '2px solid var(--success)';
+    resultDiv.textContent = '✅ 文件发送成功 - 等待接收端校验';
+
+    // 添加到历史记录
+    addTransferHistory({
+        type: 'send',
+        fileName: fileName,
+        fileSize: fileSize,
+        remoteIP: document.getElementById('transfer-target-ip').value,
+        duration: duration,
+        success: true,
+        time: new Date().toLocaleString()
+    });
+
+    // 3秒后隐藏进度条
+    setTimeout(() => {
+        document.getElementById('transfer-progress').style.display = 'none';
+    }, 3000);
+});
+
+// 发送端 - 错误
+window.api.onFileSendError((data) => {
+    document.getElementById('transfer-progress-text').textContent = '❌ 发送失败';
+    document.getElementById('transfer-progress-bar').style.background = 'var(--danger)';
+
+    // 显示错误消息
+    const resultDiv = document.getElementById('md5-result');
+    resultDiv.style.display = 'block';
+    resultDiv.style.background = 'linear-gradient(135deg, rgba(255, 68, 68, 0.2) 0%, rgba(255, 107, 138, 0.1) 100%)';
+    resultDiv.style.color = 'var(--danger)';
+    resultDiv.style.border = '2px solid var(--danger)';
+    resultDiv.textContent = '❌ 文件发送失败: ' + data.error;
+
+    setTimeout(() => {
+        document.getElementById('transfer-progress').style.display = 'none';
+        document.getElementById('transfer-progress-bar').style.background = '';
+    }, 3000);
+});
 
 // ==================== 图表初始化 ====================
 function initCharts() {

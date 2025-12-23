@@ -15,8 +15,9 @@
             <li class="active" onclick="showTab('info')">📊 网络信息</li>
             <li onclick="showTab('scan')">🔎 网段扫描</li>
             <li onclick="showTab('ping')">📡 Ping 测试</li>
-            <li onclick="showTab('arp')">🔍 ARP 表</li>
+            <li onclick="showTab('arp')">📋 ARP 表</li>
             <li onclick="showTab('throughput')">⚡ 带宽吞吐量</li>
+            <li onclick="showTab('transfer')">📁 文件传输</li>
         </ul>
     </div>
 
@@ -252,6 +253,122 @@
 
             <!-- 日志输出 -->
             <div class="console-output" id="tp-log-output"></div>
+        </div>
+
+        <!-- 文件传输页面 -->
+        <div id="transfer" class="tab-pane">
+            <h2>局域网文件传输</h2>
+
+            <!-- 收发端配置 -->
+            <div class="tp-controls">
+                <div class="card">
+                    <h3>📥 接收端 (Server)</h3>
+                    <div class="form-control">
+                        <label for="transfer-save-path">保存路径</label>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="transfer-save-path" readonly placeholder="点击选择保存目录">
+                            <button class="btn-secondary" onclick="selectSavePath()" style="padding: 8px 16px;">浏览</button>
+                        </div>
+                    </div>
+                    <button class="btn-secondary" onclick="startTransferServer()">启动接收服务 (Port 5202)</button>
+                    <p id="transfer-server-status" class="status-text">
+                        <span class="status-indicator inactive"></span>未启动
+                    </p>
+                </div>
+
+                <div class="card">
+                    <h3>📤 发送端 (Client)</h3>
+                    <div class="form-control">
+                        <label for="transfer-target-ip">目标 IP</label>
+                        <input type="text" id="transfer-target-ip" placeholder="如 192.168.1.1" value="127.0.0.1">
+                    </div>
+                    <div class="form-control">
+                        <label for="transfer-file">选择文件</label>
+                        <input type="file" id="transfer-file" style="display: none;" onchange="handleFileSelect()">
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="transfer-file-display" readonly placeholder="点击选择文件">
+                            <button class="btn-secondary" onclick="document.getElementById('transfer-file').click()" style="padding: 8px 16px;">浏览</button>
+                        </div>
+                    </div>
+                    <button class="btn-primary" id="btn-send-file" onclick="sendFile()">发送文件</button>
+                </div>
+            </div>
+
+            <!-- 传输进度 -->
+            <div id="transfer-progress" class="transfer-progress" style="display: none;">
+                <div class="progress-info">
+                    <span id="transfer-progress-text">准备传输...</span>
+                    <span id="transfer-progress-percent">0%</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div id="transfer-progress-bar" class="progress-bar"></div>
+                </div>
+                <div style="margin-top: 10px; display: flex; justify-content: space-between; font-size: 13px; color: var(--text-muted);">
+                    <span>速度: <span id="transfer-speed">0 MB/s</span></span>
+                    <span>已传输: <span id="transfer-bytes">0 MB</span> / <span id="transfer-total">0 MB</span></span>
+                    <span>剩余时间: <span id="transfer-eta">--:--</span></span>
+                </div>
+            </div>
+
+            <!-- 统计卡片 -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">当前文件</div>
+                    <div class="stat-value" id="current-file" style="font-size: 16px; word-break: break-all;">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">文件大小</div>
+                    <div class="stat-value" id="file-size">0 MB</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">源文件 MD5</div>
+                    <div class="stat-value" id="source-md5" style="font-size: 14px; font-family: 'Consolas', monospace;">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">接收文件 MD5</div>
+                    <div class="stat-value" id="received-md5" style="font-size: 14px; font-family: 'Consolas', monospace;">--</div>
+                </div>
+            </div>
+
+            <!-- MD5校验结果 -->
+            <div id="md5-result" style="display: none; padding: 15px; border-radius: 10px; margin: 20px 0; text-align: center; font-weight: 600; font-size: 16px;">
+            </div>
+
+            <!-- 传输历史 -->
+            <div class="device-list-container">
+                <div class="device-list-header">
+                    <h3>传输历史 (<span id="transfer-history-count">0</span>)</h3>
+                    <button class="btn-secondary" onclick="clearTransferHistory()" style="padding: 8px 16px; font-size: 13px;">
+                        🗑️ 清空历史
+                    </button>
+                </div>
+                <div class="device-table-wrapper">
+                    <table class="device-table">
+                        <thead>
+                        <tr>
+                            <th style="width: 40px;">#</th>
+                            <th style="width: 80px;">类型</th>
+                            <th>文件名</th>
+                            <th style="width: 100px;">大小</th>
+                            <th style="width: 150px;">对方IP</th>
+                            <th style="width: 100px;">耗时</th>
+                            <th style="width: 80px;">状态</th>
+                            <th style="width: 120px;">时间</th>
+                        </tr>
+                        </thead>
+                        <tbody id="transfer-history">
+                        <tr>
+                            <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 40px;">
+                                暂无传输记录
+                            </td>
+                        </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 日志输出 -->
+            <div class="console-output" id="transfer-log-output"></div>
         </div>
     </div>
 </div>

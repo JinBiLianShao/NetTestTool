@@ -1,10 +1,12 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { exec } = require('child_process');
 const os = require('os');
 const net = require('net');
 const dgram = require('dgram');
 const iconv = require('iconv-lite');
+const fs = require('fs');
+const crypto = require('crypto');
 
 let mainWindow;
 
@@ -213,21 +215,15 @@ async function getDeviceDetails(ip) {
 
         for (const line of lines) {
           if (line.includes(ip)) {
-            // Windows: 192.168.1.1    00-11-22-33-44-55
-            // Linux/Mac: 192.168.1.1 ether 00:11:22:33:44:55
             const macMatch = line.match(/([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})/);
             if (macMatch) {
               mac = macMatch[0].toUpperCase().replace(/-/g, ':');
-              // 简化的厂商识别（基于MAC前缀）
               vendor = getVendorFromMAC(mac);
             }
             break;
           }
         }
       }
-
-      // 获取主机名（可选，可能较慢）
-      // 这里简化处理，不进行DNS反向解析
       resolve({ mac, vendor, hostname: '' });
     });
   });
@@ -236,40 +232,20 @@ async function getDeviceDetails(ip) {
 // 简化的厂商识别（基于MAC地址前缀）
 function getVendorFromMAC(mac) {
   const prefix = mac.substring(0, 8).replace(/:/g, '').toUpperCase();
-
   const vendors = {
-    '001122': 'CIMSYS Inc',
-    '0050F2': 'Microsoft',
-    '00155D': 'Microsoft',
-    '000C29': 'VMware',
-    '005056': 'VMware',
-    '0A0027': 'VirtualBox',
-    '080027': 'VirtualBox',
-    '001DD8': 'Hewlett Packard',
-    '001E68': 'Hewlett Packard',
-    '7054D9': 'Apple',
-    '001451': 'Apple',
-    'D89695': 'Apple',
-    '8863DF': 'Apple',
-    'F0D1A9': 'Apple',
-    '3C0754': 'Apple',
-    '44D884': 'Apple',
-    '001C42': 'Parallels',
-    '000D3A': 'D-Link',
-    'B0C090': 'Intel',
-    '000E0C': 'Intel',
-    'AC220B': 'Intel',
-    'F4B301': 'Realtek',
-    '001FC6': 'Realtek',
-    '00E04C': 'Realtek',
+    '001122': 'CIMSYS Inc', '0050F2': 'Microsoft', '00155D': 'Microsoft',
+    '000C29': 'VMware', '005056': 'VMware', '0A0027': 'VirtualBox',
+    '080027': 'VirtualBox', '001DD8': 'HP', '001E68': 'HP',
+    '7054D9': 'Apple', '001451': 'Apple', 'D89695': 'Apple',
+    '8863DF': 'Apple', 'F0D1A9': 'Apple', '3C0754': 'Apple',
+    '44D884': 'Apple', '001C42': 'Parallels', '000D3A': 'D-Link',
+    'B0C090': 'Intel', '000E0C': 'Intel', 'AC220B': 'Intel',
+    'F4B301': 'Realtek', '001FC6': 'Realtek', '00E04C': 'Realtek',
   };
 
   for (const [key, value] of Object.entries(vendors)) {
-    if (prefix.startsWith(key)) {
-      return value;
-    }
+    if (prefix.startsWith(key)) return value;
   }
-
   return 'Unknown';
 }
 
@@ -289,7 +265,6 @@ ipcMain.on('net:scan-start', async (event, config) => {
       message: '正在计算网段范围...'
     });
 
-    // 计算网段
     const range = calculateNetworkRange(ip, netmask);
     const ipList = generateIPList(range.networkParts, range.broadcastParts);
 
@@ -300,15 +275,14 @@ ipcMain.on('net:scan-start', async (event, config) => {
       current: 0
     });
 
-    // 批量扫描（并发10个）
     const batchSize = 10;
     const results = [];
 
     for (let i = 0; i < ipList.length; i += batchSize) {
+      if (!scanInProgress) break;
       const batch = ipList.slice(i, i + batchSize);
       const batchResults = await Promise.all(batch.map(quickPing));
 
-      // 只处理在线设备
       for (const result of batchResults) {
         if (result.online) {
           const details = await getDeviceDetails(result.ip);
@@ -320,7 +294,6 @@ ipcMain.on('net:scan-start', async (event, config) => {
             hostname: details.hostname
           });
 
-          // 立即发送发现的设备
           mainWindow.webContents.send('scan-device-found', {
             ip: result.ip,
             time: result.time,
@@ -330,7 +303,6 @@ ipcMain.on('net:scan-start', async (event, config) => {
         }
       }
 
-      // 更新进度
       mainWindow.webContents.send('scan-status', {
         status: 'scanning',
         message: `扫描中... ${Math.min(i + batchSize, ipList.length)}/${ipList.length}`,
@@ -340,15 +312,16 @@ ipcMain.on('net:scan-start', async (event, config) => {
       });
     }
 
-    // 扫描完成
-    mainWindow.webContents.send('scan-status', {
-      status: 'completed',
-      message: `扫描完成！发现 ${results.length} 台在线设备`,
-      total: ipList.length,
-      current: ipList.length,
-      found: results.length,
-      devices: results
-    });
+    if (scanInProgress) {
+      mainWindow.webContents.send('scan-status', {
+        status: 'completed',
+        message: `扫描完成！发现 ${results.length} 台在线设备`,
+        total: ipList.length,
+        current: ipList.length,
+        found: results.length,
+        devices: results
+      });
+    }
 
   } catch (error) {
     mainWindow.webContents.send('scan-status', {
@@ -434,7 +407,6 @@ ipcMain.handle('net:tp-server', (event, { port, protocol }) => {
     lastCheckTime = Date.now();
     if (speedTimer) clearInterval(speedTimer);
 
-    // 【核心】每 1 秒计算一次原始速度
     speedTimer = setInterval(calculateSpeed, 1000);
 
     if (protocol === 'tcp') {
@@ -453,7 +425,6 @@ function calculateSpeed() {
   const duration = (now - lastCheckTime) / 1000;
 
   if (duration >= 1) {
-    // 发送原始的 1 秒速率
     const speedMbps = ((totalBytesReceived * 8) / (1024 * 1024)) / duration; // Mbps
     mainWindow.webContents.send('tp-data', speedMbps.toFixed(2));
     totalBytesReceived = 0;
@@ -563,4 +534,345 @@ ipcMain.on('net:tp-stop', () => {
   mainWindow.webContents.send('tp-log', '测试已停止');
 });
 
+// ==========================================================
+// === 6. 文件传输功能 (File Transfer with MD5) ===
+// ==========================================================
+let fileTransferServer = null;
+let currentSavePath = app.getPath('downloads'); // 默认保存路径
+
+// 计算文件MD5 (用于发送端，接收端改为流式计算)
+function calculateFileMD5(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('md5');
+    const stream = fs.createReadStream(filePath);
+
+    stream.on('data', (data) => hash.update(data));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', (err) => reject(err));
+  });
+}
+
+// 格式化文件大小
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+// 选择保存路径
+ipcMain.handle('file:select-save-path', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    defaultPath: currentSavePath
+  });
+
+  if (!result.canceled && result.filePaths.length > 0) {
+    currentSavePath = result.filePaths[0];
+    return currentSavePath;
+  }
+  return null;
+});
+
+// 启动文件传输服务器
+ipcMain.handle('file:start-server', (event, config) => {
+  return new Promise((resolve) => {
+    if (fileTransferServer) {
+      fileTransferServer.close(() => {
+        fileTransferServer = null;
+        startFileServer(config, resolve);
+      });
+    } else {
+      startFileServer(config, resolve);
+    }
+  });
+});
+
+function startFileServer(config, resolve) {
+  const { port, savePath } = config;
+  currentSavePath = savePath;
+
+  fileTransferServer = net.createServer((socket) => {
+    // 状态变量
+    let fileInfo = null;
+    let metadataBuffer = Buffer.alloc(0); // 仅用于暂存元数据解析前的 buffer
+    let metadataReceived = false;
+
+    // 流处理相关
+    let writeStream = null;
+    let fileHash = null; // 增量 MD5 计算
+    let receivedBytes = 0;
+
+    // 性能统计
+    let startTime = 0;
+    let lastProgressTime = 0;
+    let lastReceivedBytes = 0;
+
+    socket.on('data', (chunk) => {
+      // 1. 处理元数据阶段
+      if (!metadataReceived) {
+        metadataBuffer = Buffer.concat([metadataBuffer, chunk]);
+
+        // 查找元数据结束标记
+        const delimiter = Buffer.from('\n###END_METADATA###\n');
+        const delimiterIndex = metadataBuffer.indexOf(delimiter);
+
+        if (delimiterIndex !== -1) {
+          // 提取并解析元数据
+          const metadataStr = metadataBuffer.slice(0, delimiterIndex).toString('utf8');
+
+          try {
+            fileInfo = JSON.parse(metadataStr);
+            metadataReceived = true;
+            startTime = Date.now();
+            lastProgressTime = Date.now();
+
+            // 初始化写入流和哈希
+            const filePath = path.join(currentSavePath, fileInfo.fileName);
+            writeStream = fs.createWriteStream(filePath);
+            fileHash = crypto.createHash('md5');
+
+            mainWindow.webContents.send('file-transfer-start', {
+              fileName: fileInfo.fileName,
+              fileSize: fileInfo.fileSize,
+              sourceMD5: fileInfo.md5
+            });
+
+            mainWindow.webContents.send('transfer-log', `开始接收文件: ${fileInfo.fileName} (${formatFileSize(fileInfo.fileSize)})`);
+
+            // 处理粘包：Buffer 中剩余的部分是文件内容
+            const remainingData = metadataBuffer.slice(delimiterIndex + delimiter.length);
+
+            // 释放元数据 Buffer 占用内存
+            metadataBuffer = null;
+
+            if (remainingData.length > 0) {
+              handleFileChunk(remainingData);
+            }
+
+          } catch (err) {
+            mainWindow.webContents.send('transfer-log', `解析元数据失败: ${err.message}`);
+            socket.destroy();
+          }
+        }
+      }
+      // 2. 处理文件内容阶段
+      else {
+        handleFileChunk(chunk);
+      }
+    });
+
+    // 处理文件数据块的通用函数
+    function handleFileChunk(data) {
+      if (!writeStream) return;
+
+      // 写入硬盘 & 计算 Hash
+      const canWrite = writeStream.write(data);
+      fileHash.update(data);
+      receivedBytes += data.length;
+
+      // 背压控制 (Backpressure)
+      if (!canWrite) {
+        socket.pause();
+        writeStream.once('drain', () => socket.resume());
+      }
+
+      // 更新进度 (每 200ms)
+      const now = Date.now();
+      if (now - lastProgressTime >= 200 || receivedBytes === fileInfo.fileSize) {
+        const progress = (receivedBytes / fileInfo.fileSize) * 100;
+        const duration = (now - lastProgressTime) / 1000;
+        const bytesSinceLast = receivedBytes - lastReceivedBytes;
+        const speed = duration > 0 ? bytesSinceLast / duration : 0;
+
+        mainWindow.webContents.send('file-transfer-progress', {
+          received: receivedBytes,
+          total: fileInfo.fileSize,
+          progress: progress.toFixed(2),
+          speed: (speed / (1024 * 1024)).toFixed(2) // MB/s
+        });
+
+        lastProgressTime = now;
+        lastReceivedBytes = receivedBytes;
+      }
+
+      // 检查是否完成
+      if (receivedBytes >= fileInfo.fileSize) {
+        finishTransfer();
+      }
+    }
+
+    // 完成传输处理
+    function finishTransfer() {
+      writeStream.end(async () => {
+        const receivedMD5 = fileHash.digest('hex');
+        const totalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+        const match = receivedMD5 === fileInfo.md5;
+
+        mainWindow.webContents.send('file-transfer-complete', {
+          fileName: fileInfo.fileName,
+          filePath: path.join(currentSavePath, fileInfo.fileName),
+          fileSize: fileInfo.fileSize,
+          sourceMD5: fileInfo.md5,
+          receivedMD5: receivedMD5,
+          match: match,
+          duration: totalDuration
+        });
+
+        if (match) {
+          mainWindow.webContents.send('transfer-log', `✅ 文件接收成功！MD5校验通过 (${totalDuration}s)`);
+        } else {
+          mainWindow.webContents.send('transfer-log', `❌ 警告：MD5校验失败！文件可能损坏`);
+        }
+
+        // 关闭连接
+        socket.end();
+        writeStream = null;
+        fileHash = null;
+      });
+    }
+
+    // 错误处理
+    socket.on('error', (err) => {
+      mainWindow.webContents.send('transfer-log', `服务器Socket错误: ${err.message}`);
+      if (writeStream) writeStream.close();
+    });
+
+    socket.on('close', () => {
+      if (writeStream) writeStream.close();
+      mainWindow.webContents.send('transfer-log', `连接已关闭`);
+    });
+  });
+
+  fileTransferServer.listen(port, '0.0.0.0', () => {
+    resolve(`文件传输服务器已启动，监听端口: ${port}\n保存路径: ${currentSavePath}`);
+  });
+
+  fileTransferServer.on('error', (err) => {
+    resolve(`服务器启动失败: ${err.message}`);
+  });
+}
+
+// 停止文件传输服务器
+ipcMain.on('file:stop-server', () => {
+  if (fileTransferServer) {
+    fileTransferServer.close(() => {
+      fileTransferServer = null;
+      mainWindow.webContents.send('transfer-log', '文件传输服务器已停止');
+    });
+  }
+});
+
+// 发送文件
+ipcMain.on('file:send', async (event, config) => {
+  const { ip, port, filePath } = config;
+
+  try {
+    if (!fs.existsSync(filePath)) {
+      mainWindow.webContents.send('transfer-log', `错误：文件不存在 ${filePath}`);
+      mainWindow.webContents.send('file-send-error', { error: '文件不存在' });
+      return;
+    }
+
+    const stats = fs.statSync(filePath);
+    const fileName = path.basename(filePath);
+    const fileSize = stats.size;
+
+    mainWindow.webContents.send('transfer-log', `正在计算文件MD5...`);
+
+    // 计算 MD5
+    const md5 = await calculateFileMD5(filePath);
+
+    mainWindow.webContents.send('transfer-log', `文件: ${fileName}\n大小: ${formatFileSize(fileSize)}\nMD5: ${md5}`);
+    mainWindow.webContents.send('transfer-log', `正在连接到 ${ip}:${port}...`);
+
+    const client = new net.Socket();
+    let bytesSent = 0;
+    const startTime = Date.now();
+    let lastProgressTime = Date.now();
+    let lastSentBytes = 0;
+
+    client.connect(port, ip, () => {
+      mainWindow.webContents.send('transfer-log', `已连接，开始发送文件...`);
+
+      const metadata = JSON.stringify({ fileName, fileSize, md5 });
+      client.write(metadata + '\n###END_METADATA###\n');
+
+      mainWindow.webContents.send('file-send-start', { fileName, fileSize, md5 });
+
+      const readStream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
+
+      readStream.on('data', (chunk) => {
+        const canContinue = client.write(chunk);
+        bytesSent += chunk.length;
+
+        const now = Date.now();
+        if (now - lastProgressTime >= 200) {
+          const progress = (bytesSent / fileSize) * 100;
+          const duration = (now - lastProgressTime) / 1000;
+          const bytes = bytesSent - lastSentBytes;
+          const speed = duration > 0 ? bytes / duration : 0;
+
+          mainWindow.webContents.send('file-send-progress', {
+            sent: bytesSent,
+            total: fileSize,
+            progress: progress.toFixed(2),
+            speed: (speed / (1024 * 1024)).toFixed(2)
+          });
+
+          lastProgressTime = now;
+          lastSentBytes = bytesSent;
+        }
+
+        if (!canContinue) {
+          readStream.pause();
+          client.once('drain', () => readStream.resume());
+        }
+      });
+
+      readStream.on('end', () => {
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+        mainWindow.webContents.send('transfer-log', `✅ 文件发送完成！耗时: ${duration}s`);
+        mainWindow.webContents.send('file-send-complete', {
+          fileName, fileSize, md5, duration
+        });
+
+        // 确保发送缓冲区清空后再关闭
+        client.end();
+      });
+
+      readStream.on('error', (err) => {
+        mainWindow.webContents.send('transfer-log', `读取文件错误: ${err.message}`);
+        mainWindow.webContents.send('file-send-error', { error: err.message });
+        client.destroy();
+      });
+    });
+
+    client.on('error', (err) => {
+      mainWindow.webContents.send('transfer-log', `连接错误: ${err.message}`);
+      mainWindow.webContents.send('file-send-error', { error: err.message });
+    });
+
+    client.on('close', () => {
+      mainWindow.webContents.send('transfer-log', `连接已关闭`);
+    });
+
+  } catch (error) {
+    mainWindow.webContents.send('transfer-log', `发送文件失败: ${error.message}`);
+    mainWindow.webContents.send('file-send-error', { error: error.message });
+  }
+});
+
 app.whenReady().then(createWindow);
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+});
