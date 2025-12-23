@@ -600,27 +600,40 @@ async function startTransferServer() {
 }
 
 // 发送文件
+// 1. 定义新的选择函数
+async function triggerFileSelect() {
+    const fileInfo = await window.api.selectSendFile();
+    if (fileInfo) {
+        selectedFilePath = fileInfo.path;
+        document.getElementById('transfer-file-display').value = fileInfo.name;
+
+        // 更新界面显示
+        const sizeInMB = (fileInfo.size / (1024 * 1024)).toFixed(2);
+        document.getElementById('current-file').textContent = fileInfo.name;
+        document.getElementById('file-size').textContent = sizeInMB + ' MB';
+    }
+}
+
+// 2. 确保 sendFile 函数使用的是正确的变量
 function sendFile() {
     const ip = document.getElementById('transfer-target-ip').value.trim();
-
     if (!ip) {
         alert('请输入目标IP地址！');
         return;
     }
 
+    // 此时 selectedFilePath 会由 triggerFileSelect 正确赋值
     if (!selectedFilePath) {
         alert('请先选择要发送的文件！');
         return;
     }
 
-    // 开始发送
     window.api.sendFile({
         ip: ip,
         port: 5202,
         filePath: selectedFilePath
     });
 
-    // 显示进度条
     document.getElementById('transfer-progress').style.display = 'block';
     document.getElementById('transfer-progress-text').textContent = '正在发送...';
 }

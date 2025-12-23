@@ -1,6 +1,6 @@
 {
   "name": "net-test-tool",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "网络调试工具，具备网络层调试的所有功能，如arp测试，IP协议测试，ICMP测试，性能网口吞吐量测试，延时测试，丢包率统计网络环境查询（类似CPing）。",
   "license": "MIT",
   "author": "liansixin",

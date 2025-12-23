@@ -86,7 +86,8 @@
             <div class="device-list-container">
                 <div class="device-list-header">
                     <h3>发现的设备 (<span id="device-count">0</span>)</h3>
-                    <button class="btn-secondary" onclick="exportDeviceList()" style="padding: 8px 16px; font-size: 13px;">
+                    <button class="btn-secondary" onclick="exportDeviceList()"
+                            style="padding: 8px 16px; font-size: 13px;">
                         📋 导出列表
                     </button>
                 </div>
@@ -218,7 +219,8 @@
                         </div>
                         <div class="form-control">
                             <label for="tp-udp-size">数据包大小 (字节)</label>
-                            <input type="number" id="tp-udp-size" value="1470" min="1" placeholder="建议 1470 (以太网 MTU-IP头-UDP头)">
+                            <input type="number" id="tp-udp-size" value="1470" min="1"
+                                   placeholder="建议 1470 (以太网 MTU-IP头-UDP头)">
                         </div>
                     </div>
 
@@ -267,7 +269,8 @@
                         <label for="transfer-save-path">保存路径</label>
                         <div style="display: flex; gap: 10px;">
                             <input type="text" id="transfer-save-path" readonly placeholder="点击选择保存目录">
-                            <button class="btn-secondary" onclick="selectSavePath()" style="padding: 8px 16px;">浏览</button>
+                            <button class="btn-secondary" onclick="selectSavePath()" style="padding: 8px 16px;">浏览
+                            </button>
                         </div>
                     </div>
                     <button class="btn-secondary" onclick="startTransferServer()">启动接收服务 (Port 5202)</button>
@@ -283,11 +286,12 @@
                         <input type="text" id="transfer-target-ip" placeholder="如 192.168.1.1" value="127.0.0.1">
                     </div>
                     <div class="form-control">
-                        <label for="transfer-file">选择文件</label>
-                        <input type="file" id="transfer-file" style="display: none;" onchange="handleFileSelect()">
+                        <label>选择文件</label>
                         <div style="display: flex; gap: 10px;">
                             <input type="text" id="transfer-file-display" readonly placeholder="点击选择文件">
-                            <button class="btn-secondary" onclick="document.getElementById('transfer-file').click()" style="padding: 8px 16px;">浏览</button>
+                            <button class="btn-secondary" onclick="triggerFileSelect()" style="padding: 8px 16px;">
+                                浏览
+                            </button>
                         </div>
                     </div>
                     <button class="btn-primary" id="btn-send-file" onclick="sendFile()">发送文件</button>
@@ -322,23 +326,29 @@
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">源文件 MD5</div>
-                    <div class="stat-value" id="source-md5" style="font-size: 14px; font-family: 'Consolas', monospace;">--</div>
+                    <div class="stat-value" id="source-md5"
+                         style="font-size: 14px; font-family: 'Consolas', monospace;">--
+                    </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">接收文件 MD5</div>
-                    <div class="stat-value" id="received-md5" style="font-size: 14px; font-family: 'Consolas', monospace;">--</div>
+                    <div class="stat-value" id="received-md5"
+                         style="font-size: 14px; font-family: 'Consolas', monospace;">--
+                    </div>
                 </div>
             </div>
 
             <!-- MD5校验结果 -->
-            <div id="md5-result" style="display: none; padding: 15px; border-radius: 10px; margin: 20px 0; text-align: center; font-weight: 600; font-size: 16px;">
+            <div id="md5-result"
+                 style="display: none; padding: 15px; border-radius: 10px; margin: 20px 0; text-align: center; font-weight: 600; font-size: 16px;">
             </div>
 
             <!-- 传输历史 -->
             <div class="device-list-container">
                 <div class="device-list-header">
                     <h3>传输历史 (<span id="transfer-history-count">0</span>)</h3>
-                    <button class="btn-secondary" onclick="clearTransferHistory()" style="padding: 8px 16px; font-size: 13px;">
+                    <button class="btn-secondary" onclick="clearTransferHistory()"
+                            style="padding: 8px 16px; font-size: 13px;">
                         🗑️ 清空历史
                     </button>
                 </div>

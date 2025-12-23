@@ -40,5 +40,6 @@ contextBridge.exposeInMainWorld('api', {
   onFileSendStart: (callback) => ipcRenderer.on('file-send-start', (_, data) => callback(data)),
   onFileSendProgress: (callback) => ipcRenderer.on('file-send-progress', (_, data) => callback(data)),
   onFileSendComplete: (callback) => ipcRenderer.on('file-send-complete', (_, data) => callback(data)),
-  onFileSendError: (callback) => ipcRenderer.on('file-send-error', (_, data) => callback(data))
+  onFileSendError: (callback) => ipcRenderer.on('file-send-error', (_, data) => callback(data)),
+  selectSendFile: () => ipcRenderer.invoke('file:select-send-file')
 });
