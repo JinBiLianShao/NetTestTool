@@ -1,4 +1,4 @@
-// renderer.js - 完整版本
+// renderer.js - 完整版本 (支持 UDT)
 
 // ==================== 全局变量 ====================
 let pingChart, speedChart;
@@ -628,10 +628,13 @@ function sendFile() {
         return;
     }
 
+    const protocol = document.getElementById('transfer-protocol').value;
+
     window.api.sendFile({
         ip: ip,
         port: 5202,
-        filePath: selectedFilePath
+        filePath: selectedFilePath,
+        protocol: protocol // 添加协议参数
     });
 
     document.getElementById('transfer-progress').style.display = 'block';
@@ -675,7 +678,7 @@ function updateTransferHistoryTable() {
     document.getElementById('transfer-history-count').textContent = transferHistory.length;
 
     if (transferHistory.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 40px;">暂无传输记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 40px;">暂无传输记录</td></tr>';
         return;
     }
 
@@ -686,6 +689,7 @@ function updateTransferHistoryTable() {
             <td style="word-break: break-all;">${record.fileName}</td>
             <td>${formatFileSize(record.fileSize)}</td>
             <td style="font-family: 'Consolas', monospace;">${record.remoteIP}</td>
+            <td><span style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-size: 12px;">${record.protocol || 'TCP'}</span></td>
             <td>${record.duration}s</td>
             <td>
                 <span style="color: ${record.success ? 'var(--success)' : 'var(--danger)'};">
@@ -753,7 +757,7 @@ window.api.onFileTransferProgress((data) => {
 
 // 接收端 - 接收完成
 window.api.onFileTransferComplete((data) => {
-    const { fileName, fileSize, sourceMD5, receivedMD5, match, duration } = data;
+    const { fileName, fileSize, sourceMD5, receivedMD5, match, duration, protocol } = data;
 
     // 更新进度为100%
     document.getElementById('transfer-progress-percent').textContent = '100%';
@@ -787,7 +791,8 @@ window.api.onFileTransferComplete((data) => {
         remoteIP: document.getElementById('transfer-target-ip').value || 'Unknown',
         duration: duration,
         success: match,
-        time: new Date().toLocaleString()
+        time: new Date().toLocaleString(),
+        protocol: protocol
     });
 
     // 3秒后隐藏进度条
@@ -844,7 +849,7 @@ window.api.onFileSendProgress((data) => {
 
 // 发送端 - 发送完成
 window.api.onFileSendComplete((data) => {
-    const { fileName, fileSize, md5, duration } = data;
+    const { fileName, fileSize, md5, duration, protocol } = data;
 
     document.getElementById('transfer-progress-percent').textContent = '100%';
     document.getElementById('transfer-progress-bar').style.width = '100%';
@@ -866,7 +871,8 @@ window.api.onFileSendComplete((data) => {
         remoteIP: document.getElementById('transfer-target-ip').value,
         duration: duration,
         success: true,
-        time: new Date().toLocaleString()
+        time: new Date().toLocaleString(),
+        protocol: protocol
     });
 
     // 3秒后隐藏进度条
