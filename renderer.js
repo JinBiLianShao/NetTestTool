@@ -615,6 +615,35 @@ async function triggerFileSelect() {
 }
 
 // 2. 确保 sendFile 函数使用的是正确的变量
+
+// ==================== UDT配置相关函数 ====================
+
+// 切换UDT配置显示
+function toggleUdtConfig() {
+    const protocol = document.getElementById('transfer-protocol').value;
+    const udtConfig = document.getElementById('udt-config');
+    udtConfig.style.display = protocol === 'udt' ? 'block' : 'none';
+}
+
+// 获取UDT配置参数
+function getUdtConfig() {
+    return {
+        windowSize: parseInt(document.getElementById('udt-window-size').value) || 32,
+        packetSize: parseInt(document.getElementById('udt-packet-size').value) || 1400,
+        rto: parseInt(document.getElementById('udt-rto').value) || 1000,
+        maxRetransmit: parseInt(document.getElementById('udt-max-retrans').value) || 5,
+        sendInterval: parseInt(document.getElementById('udt-send-interval').value) || 10,
+        bandwidth: parseInt(document.getElementById('udt-bandwidth').value) || 100,
+        fastRetransmit: document.getElementById('udt-fast-retransmit').checked,
+        congestionControl: document.getElementById('udt-congestion-control').checked
+    };
+}
+
+// 更新UDT配置说明
+function updateUdtConfigInfo() {
+    const config = getUdtConfig();
+    logTransfer(`UDT配置: 窗口=${config.windowSize} | 包大小=${config.packetSize}字节 | RTO=${config.rto}ms | 最大重传=${config.maxRetransmit}`);
+}
 function sendFile() {
     const ip = document.getElementById('transfer-target-ip').value.trim();
     if (!ip) {
@@ -622,24 +651,33 @@ function sendFile() {
         return;
     }
 
-    // 此时 selectedFilePath 会由 triggerFileSelect 正确赋值
     if (!selectedFilePath) {
         alert('请先选择要发送的文件！');
         return;
     }
 
     const protocol = document.getElementById('transfer-protocol').value;
-
-    window.api.sendFile({
+    const config = {
         ip: ip,
         port: 5202,
         filePath: selectedFilePath,
-        protocol: protocol // 添加协议参数
-    });
+        protocol: protocol
+    };
+
+    // 如果是UDT协议，添加配置参数
+    if (protocol === 'udt') {
+        config.udtConfig = getUdtConfig();
+        updateUdtConfigInfo();
+    }
+
+    window.api.sendFile(config);
 
     document.getElementById('transfer-progress').style.display = 'block';
     document.getElementById('transfer-progress-text').textContent = '正在发送...';
 }
+
+// 在初始化函数中添加
+
 
 // 日志输出
 function logTransfer(msg) {
@@ -1012,7 +1050,12 @@ document.addEventListener('DOMContentLoaded', () => {
     loadInterfaces();
     loadScanInterfaces();
     initCharts();
-    toggleUdpConfig();
+    toggleUdtConfig(); // 添加这一行
+
+    // 监听UDT配置变化
+    document.getElementById('udt-window-size').addEventListener('change', updateUdtConfigInfo);
+    document.getElementById('udt-packet-size').addEventListener('change', updateUdtConfigInfo);
+    document.getElementById('udt-rto').addEventListener('change', updateUdtConfigInfo);
 });
 
 // 页面卸载时清理资源

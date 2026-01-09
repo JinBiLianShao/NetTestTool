@@ -240,6 +240,7 @@
             <div class="console-output" id="tp-log-output"></div>
         </div>
 
+        <!-- 在文件传输选项卡的发送端区域添加UDT配置 -->
         <div id="transfer" class="tab-pane">
             <h2>局域网文件传输</h2>
 
@@ -268,11 +269,60 @@
                     </div>
                     <div class="form-control">
                         <label for="transfer-protocol">传输协议</label>
-                        <select id="transfer-protocol" class="protocol-select">
+                        <select id="transfer-protocol" class="protocol-select" onchange="toggleUdtConfig()">
                             <option value="tcp">TCP (默认)</option>
                             <option value="udt">UDT (可靠UDP)</option>
                         </select>
                     </div>
+
+                    <!-- UDT配置区域 -->
+                    <div id="udt-config"
+                         style="display: none; margin-top: 15px; border: 1px dashed var(--border-color); padding: 15px; border-radius: 8px; background: rgba(15, 52, 96, 0.3);">
+                        <h4 style="color: var(--accent); margin-bottom: 15px;">UDT 协议配置</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div class="form-control">
+                                <label for="udt-window-size">滑动窗口大小</label>
+                                <input type="number" id="udt-window-size" value="32" min="1" max="256"
+                                       style="padding: 8px;">
+                            </div>
+                            <div class="form-control">
+                                <label for="udt-packet-size">数据包大小 (字节)</label>
+                                <input type="number" id="udt-packet-size" value="1400" min="100" max="65500"
+                                       style="padding: 8px;">
+                            </div>
+                            <div class="form-control">
+                                <label for="udt-rto">重传超时 (ms)</label>
+                                <input type="number" id="udt-rto" value="1000" min="100" max="10000" step="100"
+                                       style="padding: 8px;">
+                            </div>
+                            <div class="form-control">
+                                <label for="udt-max-retrans">最大重传次数</label>
+                                <input type="number" id="udt-max-retrans" value="5" min="1" max="20"
+                                       style="padding: 8px;">
+                            </div>
+                            <div class="form-control">
+                                <label for="udt-send-interval">发送间隔 (ms)</label>
+                                <input type="number" id="udt-send-interval" value="10" min="1" max="100"
+                                       style="padding: 8px;">
+                            </div>
+                            <div class="form-control">
+                                <label for="udt-bandwidth">目标带宽 (Mbps)</label>
+                                <input type="number" id="udt-bandwidth" value="100" min="1" max="1000"
+                                       style="padding: 8px;">
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px;">
+                            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted);">
+                                <input type="checkbox" id="udt-fast-retransmit" checked>
+                                快速重传 (Fast Retransmit)
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); margin-top: 5px;">
+                                <input type="checkbox" id="udt-congestion-control" checked>
+                                拥塞控制 (Congestion Control)
+                            </label>
+                        </div>
+                    </div>
+
                     <div class="form-control">
                         <label>选择文件</label>
                         <div style="display: flex; gap: 10px;">

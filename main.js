@@ -549,6 +549,8 @@ const UDT_CMD_DATA = 0x02;
 const UDT_CMD_ACK = 0x03;
 const UDT_CMD_FIN = 0x04;
 const UDT_WINDOW_SIZE = 20;  // 滑动窗口大小
+const UDT_CMD_RTT = 0x05;    // 新增：RTT探测包
+const UDT_CMD_NAK = 0x06;    // 新增：否定应答（用于快速重传）
 
 // 计算文件MD5
 function calculateFileMD5(filePath) {
@@ -839,10 +841,10 @@ function handleUdtReceiver(socket, savePath) {
 
 // === 发送文件主入口 ===
 ipcMain.on('file:send', async (event, config) => {
-    const { ip, port, filePath, protocol } = config;
+    const {ip, port, filePath, protocol, udtConfig} = config;
 
     if (!fs.existsSync(filePath)) {
-        mainWindow.webContents.send('file-send-error', { error: '文件不存在' });
+        mainWindow.webContents.send('file-send-error', {error: '文件不存在'});
         return;
     }
 
@@ -853,10 +855,10 @@ ipcMain.on('file:send', async (event, config) => {
     mainWindow.webContents.send('transfer-log', `正在计算 MD5...`);
     const md5 = await calculateFileMD5(filePath);
 
-    mainWindow.webContents.send('transfer-log', `模式: ${protocol === 'udt' ? 'UDT (Reliable UDP)' : 'TCP'}`);
+    mainWindow.webContents.send('transfer-log', `模式: ${protocol === 'udt' ? 'UDT (可靠UDP)' : 'TCP'}`);
 
     if (protocol === 'udt') {
-        sendUdtFile(ip, port, filePath, fileName, fileSize, md5);
+        sendUdtFile(ip, port, filePath, fileName, fileSize, md5, udtConfig);
     } else {
         sendTcpFile(ip, port, filePath, fileName, fileSize, md5);
     }
@@ -919,153 +921,393 @@ function sendTcpFile(ip, port, filePath, fileName, fileSize, md5) {
 }
 
 // === UDT 发送逻辑 (Reliable UDP) ===
-function sendUdtFile(ip, port, filePath, fileName, fileSize, md5) {
+function sendUdtFile(ip, port, filePath, fileName, fileSize, md5, udtConfig) {
     const socket = dgram.createSocket('udp4');
     const fd = fs.openSync(filePath, 'r');
-    const buffer = Buffer.alloc(UDT_CHUNK_SIZE);
 
+    // 使用配置参数
+    const config = {
+        windowSize: udtConfig?.windowSize || 32,
+        packetSize: udtConfig?.packetSize || 1400,
+        rto: udtConfig?.rto || 1000,  // ms
+        maxRetransmit: udtConfig?.maxRetransmit || 5,
+        sendInterval: udtConfig?.sendInterval || 10,  // ms
+        bandwidth: udtConfig?.bandwidth || 100,  // Mbps
+        fastRetransmit: udtConfig?.fastRetransmit !== false,
+        congestionControl: udtConfig?.congestionControl !== false
+    };
+
+    // 状态管理
     let seq = 0;
     let bytesSent = 0;
-    let confirmedSeq = 0; // 接收方已经确认收到的连续包序号
+    let confirmedSeq = 0;
     let isFinished = false;
-
-    // 状态统计
     const startTime = Date.now();
     let lastProgressTime = Date.now();
     let lastSentBytes = 0;
 
+    // 包管理
+    const packetBuffer = new Map();  // 存储已发送但未确认的包
+    const sendTimestamps = new Map();  // 存储发送时间
+    const retransmitCount = new Map();  // 存储重传次数
+    const rttSamples = [];  // RTT样本
+    let estimatedRTT = 500;  // 初始RTT估计值 (ms)
+    let deviationRTT = 250;  // RTT偏差
+
+    // 拥塞控制
+    let cwnd = 1;  // 拥塞窗口
+    let ssthresh = config.windowSize;  // 慢启动阈值
+    let dupAckCount = 0;  // 重复ACK计数
+    let lastAckSeq = -1;
+    let inSlowStart = true;
+
+    // 定时器
+    let handshakeTimer = null;
+    let retransmitTimer = null;
+    let rttProbeTimer = null;
+    let pacingTimer = null;
+
+    // 发送统计
+    let totalPacketsSent = 0;
+    let totalPacketsRetransmitted = 0;
+
     // 1. 发送元数据握手
-    const meta = JSON.stringify({ fileName, fileSize, md5 });
+    const meta = JSON.stringify({
+        fileName,
+        fileSize,
+        md5,
+        config: config  // 发送配置给接收端
+    });
     const metaBuf = Buffer.concat([Buffer.from([UDT_CMD_META]), Buffer.from(meta)]);
 
-    let handshakeTimer = null;
-    let windowTimer = null;
+    mainWindow.webContents.send('transfer-log', `[UDT] 配置: 窗口=${config.windowSize}, 包大小=${config.packetSize}, RTO=${config.rto}ms`);
 
-    // 发送握手包循环
     const sendHandshake = () => {
         socket.send(metaBuf, port, ip);
     };
 
     handshakeTimer = setInterval(sendHandshake, 500);
     sendHandshake();
-    mainWindow.webContents.send('transfer-log', '正在握手 (UDT)...');
 
-    // 监听 ACK
+    // 监听响应
     socket.on('message', (msg) => {
         const type = msg[0];
 
         // 握手确认
-        if (type === UDT_CMD_ACK && msg.length === 1 && !handshakeTimer._destroyed) {
+        if (type === UDT_CMD_ACK && msg.length === 1) {
             clearInterval(handshakeTimer);
-            handshakeTimer._destroyed = true; // 标记已停止
-            mainWindow.webContents.send('file-send-start', { fileName, fileSize, md5 });
+            mainWindow.webContents.send('file-send-start', {fileName, fileSize, md5});
+            mainWindow.webContents.send('transfer-log', '[UDT] 握手成功，开始传输数据');
             startDataTransmission();
         }
         // 数据 ACK
         else if (type === UDT_CMD_ACK && msg.length === 5) {
-            const nextExpected = msg.readUInt32BE(1);
-            if (nextExpected > confirmedSeq) {
-                confirmedSeq = nextExpected;
-                // 滑动窗口推进
+            const ackedSeq = msg.readUInt32BE(1);
+
+            // 处理重复ACK（快速重传）
+            if (ackedSeq === lastAckSeq) {
+                dupAckCount++;
+                if (config.fastRetransmit && dupAckCount >= 3 && packetBuffer.has(ackedSeq + 1)) {
+                    // 快速重传
+                    mainWindow.webContents.send('transfer-log', `[UDT] 快速重传 seq=${ackedSeq + 1}`);
+                    retransmitPacket(ackedSeq + 1);
+                }
+            } else {
+                dupAckCount = 0;
+                lastAckSeq = ackedSeq;
             }
-        }
-        // 结束确认
-        else if (type === UDT_CMD_FIN) {
-            isFinished = true;
-            const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-            mainWindow.webContents.send('file-send-complete', { fileName, fileSize, md5, duration, protocol: 'UDT' });
-            socket.close();
-            fs.closeSync(fd);
-        }
-    });
 
-    function startDataTransmission() {
-        // 传输循环
-        const loop = () => {
-            if (isFinished) return;
+            if (ackedSeq > confirmedSeq) {
+                // 滑动窗口：释放已确认的包
+                for (let s = confirmedSeq; s < ackedSeq; s++) {
+                    if (packetBuffer.has(s)) {
+                        packetBuffer.delete(s);
+                        sendTimestamps.delete(s);
+                        retransmitCount.delete(s);
+                    }
+                }
+                confirmedSeq = ackedSeq;
 
-            // 简单的流控：如果在窗口内，则发送
-            // 窗口：[confirmedSeq, confirmedSeq + UDT_WINDOW_SIZE]
-            // 当前发送序号 seq
-            if (seq < confirmedSeq + UDT_WINDOW_SIZE) {
-                if (bytesSent < fileSize) {
-                    const position = seq * UDT_CHUNK_SIZE;
-                    const readLen = fs.readSync(fd, buffer, 0, UDT_CHUNK_SIZE, position);
-
-                    if (readLen > 0) {
-                        // 构建数据包: [Type(1)][Seq(4)][Data]
-                        const header = Buffer.alloc(5);
-                        header[0] = UDT_CMD_DATA;
-                        header.writeUInt32BE(seq, 1);
-                        const packet = Buffer.concat([header, buffer.slice(0, readLen)]);
-
-                        socket.send(packet, port, ip);
-
-                        // 只有在发送新包时才增加 seq。重传由下面的超时逻辑处理
-                        if (seq * UDT_CHUNK_SIZE === bytesSent) { // 简单判断是否是新包
-                            // 这里其实逻辑需要修正：UDP文件发送通常是预读。
-                            // 简化版：我们假设每次循环都能发，但是 seq 不能超过 confirmedSeq + Window
+                // 拥塞控制
+                if (config.congestionControl) {
+                    if (inSlowStart) {
+                        cwnd = Math.min(cwnd + 1, config.windowSize);
+                        if (cwnd >= ssthresh) {
+                            inSlowStart = false;
+                            mainWindow.webContents.send('transfer-log', `[UDT] 进入拥塞避免阶段`);
                         }
+                    } else {
+                        cwnd = Math.min(cwnd + 1.0 / cwnd, config.windowSize);
                     }
                 }
             }
 
-            // 进度更新
+            // 计算RTT
+            if (sendTimestamps.has(ackedSeq - 1)) {
+                const rtt = Date.now() - sendTimestamps.get(ackedSeq - 1);
+                updateRTTEstimate(rtt);
+                sendTimestamps.delete(ackedSeq - 1);
+            }
+
+            // 检查是否完成
+            if (confirmedSeq * config.packetSize >= fileSize && !isFinished) {
+                sendFin();
+            }
+        }
+        // RTT探测响应
+        else if (type === UDT_CMD_RTT) {
+            const probeSeq = msg.readUInt32BE(1);
+            if (sendTimestamps.has(probeSeq)) {
+                const rtt = Date.now() - sendTimestamps.get(probeSeq);
+                updateRTTEstimate(rtt);
+                sendTimestamps.delete(probeSeq);
+            }
+        }
+    });
+
+    // 更新RTT估计
+    function updateRTTEstimate(sampleRtt) {
+        rttSamples.push(sampleRtt);
+        if (rttSamples.length > 10) rttSamples.shift();
+
+        // Jacobson/Karels算法
+        const alpha = 0.125;
+        const beta = 0.25;
+        estimatedRTT = (1 - alpha) * estimatedRTT + alpha * sampleRtt;
+        deviationRTT = (1 - beta) * deviationRTT + beta * Math.abs(sampleRtt - estimatedRTT);
+
+        // 动态调整RTO
+        config.rto = Math.max(estimatedRTT + 4 * deviationRTT, 200);
+    }
+
+    // 发送RTT探测包
+    function sendRttProbe() {
+        if (isFinished) return;
+
+        const probeSeq = confirmedSeq;
+        const probeBuf = Buffer.alloc(5);
+        probeBuf[0] = UDT_CMD_RTT;
+        probeBuf.writeUInt32BE(probeSeq, 1);
+
+        socket.send(probeBuf, port, ip);
+        sendTimestamps.set(probeSeq, Date.now());
+
+        rttProbeTimer = setTimeout(sendRttProbe, 5000);
+    }
+
+    // 重传单个包
+    function retransmitPacket(seq) {
+        if (!packetBuffer.has(seq) || isFinished) return;
+
+        const count = retransmitCount.get(seq) || 0;
+        if (count >= config.maxRetransmit) {
+            mainWindow.webContents.send('file-send-error', {error: `包${seq}达到最大重传次数`});
+            isFinished = true;
+            return;
+        }
+
+        // 读取数据
+        const position = seq * config.packetSize;
+        if (position >= fileSize) return;
+
+        const buffer = Buffer.alloc(config.packetSize);
+        const readLen = fs.readSync(fd, buffer, 0, Math.min(config.packetSize, fileSize - position), position);
+
+        const header = Buffer.alloc(5);
+        header[0] = UDT_CMD_DATA;
+        header.writeUInt32BE(seq, 1);
+        const packet = Buffer.concat([header, buffer.slice(0, readLen)]);
+
+        socket.send(packet, port, ip);
+        retransmitCount.set(seq, count + 1);
+        sendTimestamps.set(seq, Date.now());
+        totalPacketsRetransmitted++;
+
+        // 拥塞控制：快速恢复
+        if (config.congestionControl) {
+            ssthresh = Math.max(Math.floor(cwnd / 2), 2);
+            cwnd = ssthresh + 3;
+            inSlowStart = false;
+        }
+    }
+
+    // 重传检测定时器
+    function startRetransmitTimer() {
+        if (retransmitTimer) clearInterval(retransmitTimer);
+
+        retransmitTimer = setInterval(() => {
+            if (isFinished) {
+                clearInterval(retransmitTimer);
+                return;
+            }
+
             const now = Date.now();
-            if (now - lastProgressTime >= 200) {
-                // 进度基于 confirmedSeq，因为那是对方确实收到的
-                const confirmedBytes = Math.min(confirmedSeq * UDT_CHUNK_SIZE, fileSize);
-                const progress = (confirmedBytes / fileSize) * 100;
-                const duration = (now - lastProgressTime) / 1000;
-                const speed = duration > 0 ? (confirmedBytes - lastSentBytes) / duration : 0;
+            for (const [seq, sendTime] of sendTimestamps.entries()) {
+                if (now - sendTime > config.rto) {
+                    mainWindow.webContents.send('transfer-log', `[UDT] 超时重传 seq=${seq}`);
+                    retransmitPacket(seq);
+                }
+            }
+        }, config.rto / 2);
+    }
 
-                mainWindow.webContents.send('file-send-progress', {
-                    sent: confirmedBytes,
-                    total: fileSize,
-                    progress: progress.toFixed(2),
-                    speed: (speed / (1024 * 1024)).toFixed(2)
-                });
-                lastProgressTime = now;
-                lastSentBytes = confirmedBytes;
+    // 发送数据包（带拥塞控制）
+    function sendDataPacket(seq) {
+        if (seq * config.packetSize >= fileSize || isFinished) return;
+
+        // 检查拥塞窗口
+        const packetsInFlight = seq - confirmedSeq;
+        if (packetsInFlight >= cwnd) {
+            return false; // 拥塞窗口已满
+        }
+
+        // 读取数据
+        const position = seq * config.packetSize;
+        const buffer = Buffer.alloc(config.packetSize);
+        const readLen = fs.readSync(fd, buffer, 0, Math.min(config.packetSize, fileSize - position), position);
+
+        // 构建包
+        const header = Buffer.alloc(5);
+        header[0] = UDT_CMD_DATA;
+        header.writeUInt32BE(seq, 1);
+        const packet = Buffer.concat([header, buffer.slice(0, readLen)]);
+
+        // 发送
+        socket.send(packet, port, ip);
+
+        // 记录状态
+        packetBuffer.set(seq, packet);
+        sendTimestamps.set(seq, Date.now());
+        retransmitCount.set(seq, 0);
+        totalPacketsSent++;
+
+        // 更新进度
+        bytesSent = seq * config.packetSize + readLen;
+        const now = Date.now();
+        if (now - lastProgressTime >= 200) {
+            const progress = (bytesSent / fileSize) * 100;
+            const duration = (now - lastProgressTime) / 1000;
+            const speed = duration > 0 ? (bytesSent - lastSentBytes) / duration : 0;
+
+            mainWindow.webContents.send('file-send-progress', {
+                sent: bytesSent,
+                total: fileSize,
+                progress: progress.toFixed(2),
+                speed: (speed / (1024 * 1024)).toFixed(2),
+                windowSize: cwnd,
+                rtt: Math.round(estimatedRTT),
+                lossRate: totalPacketsRetransmitted / totalPacketsSent * 100
+            });
+
+            lastProgressTime = now;
+            lastSentBytes = bytesSent;
+        }
+
+        return true;
+    }
+
+    // 速率控制发送
+    function startPacedTransmission() {
+        let nextSeq = confirmedSeq;
+        let lastSendTime = Date.now();
+
+        function pacedSend() {
+            if (isFinished) return;
+
+            const now = Date.now();
+            const elapsed = now - lastSendTime;
+
+            // 计算允许发送的包数（基于带宽配置）
+            const targetPacketsPerSecond = (config.bandwidth * 1024 * 1024 / 8) / config.packetSize;
+            const maxPacketsThisCycle = Math.floor(targetPacketsPerSecond * elapsed / 1000);
+
+            let packetsSentThisCycle = 0;
+
+            // 发送数据包
+            while (packetsSentThisCycle < maxPacketsThisCycle &&
+            nextSeq - confirmedSeq < cwnd &&
+            nextSeq * config.packetSize < fileSize) {
+
+                if (sendDataPacket(nextSeq)) {
+                    packetsSentThisCycle++;
+                    nextSeq++;
+                } else {
+                    break; // 拥塞窗口已满
+                }
             }
 
-            // 检查完成
-            if (confirmedSeq * UDT_CHUNK_SIZE >= fileSize && !isFinished) {
-                // 发送 FIN
-                const finBuf = Buffer.alloc(1);
-                finBuf[0] = UDT_CMD_FIN;
-                socket.send(finBuf, port, ip);
-            }
+            lastSendTime = now;
+            setTimeout(pacedSend, config.sendInterval);
+        }
 
-            // 自动重传机制 (简单版: 总是发送 confirmedSeq 对应的包，直到它推进)
-            // 实际 UDT 复杂得多。这里我们做一个简化的 "Go-Back-N" 变体：
-            // 如果 seq 跑得太快，就会停下来。
-            // 实际上，为了填满管道，我们需要一直循环发送 seq = confirmedSeq 到 confirmedSeq + Window
-            // 但是为了防止洪水攻击，我们需要 paced sending。
-            // 在 Node.js 事件循环中，用 setImmediate 模拟
+        pacedSend();
+    }
 
-            // 修正后的发送逻辑：
-            // 每次循环，遍历窗口内的所有包进行发送 (暴力重传，抗丢包)
-            // 随着 confirmedSeq 增加，窗口向后移动
-            for (let i = 0; i < UDT_WINDOW_SIZE; i++) {
-                const currentSeq = confirmedSeq + i;
-                const position = currentSeq * UDT_CHUNK_SIZE;
-                if (position >= fileSize) break; // 超出文件末尾
+    // 开始数据传输
+    function startDataTransmission() {
+        startRetransmitTimer();
+        startPacedTransmission();
+        sendRttProbe();
 
-                const readLen = fs.readSync(fd, buffer, 0, UDT_CHUNK_SIZE, position);
-                const header = Buffer.alloc(5);
-                header[0] = UDT_CMD_DATA;
-                header.writeUInt32BE(currentSeq, 1);
-                const packet = Buffer.concat([header, buffer.slice(0, readLen)]);
+        mainWindow.webContents.send('transfer-log',
+            `[UDT] 开始传输，拥塞控制: ${config.congestionControl ? '开启' : '关闭'}, 快速重传: ${config.fastRetransmit ? '开启' : '关闭'}`);
+    }
 
-                socket.send(packet, port, ip);
-            }
+    // 发送结束包
+    function sendFin() {
+        isFinished = true;
 
-            // 稍微延时避免 CPU 100% 和 UDP 缓冲区溢出
-            setTimeout(loop, 10);
-        };
+        const finBuf = Buffer.alloc(1);
+        finBuf[0] = UDT_CMD_FIN;
+        socket.send(finBuf, port, ip);
 
-        loop();
+        // 清理资源
+        clearInterval(retransmitTimer);
+        clearTimeout(rttProbeTimer);
+
+        // 等待最后的ACK
+        setTimeout(() => {
+            const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+            const avgSpeed = (fileSize / duration) / (1024 * 1024);
+
+            mainWindow.webContents.send('file-send-complete', {
+                fileName,
+                fileSize,
+                md5,
+                duration,
+                protocol: 'UDT',
+                stats: {
+                    avgSpeed: avgSpeed.toFixed(2),
+                    packetsSent: totalPacketsSent,
+                    packetsRetransmitted: totalPacketsRetransmitted,
+                    lossRate: totalPacketsRetransmitted / totalPacketsSent * 100,
+                    finalWindowSize: cwnd,
+                    finalRTT: Math.round(estimatedRTT)
+                }
+            });
+
+            mainWindow.webContents.send('transfer-log',
+                `[UDT] 传输完成: ${duration}s, 平均速度: ${avgSpeed.toFixed(2)} MB/s, 丢包率: ${(totalPacketsRetransmitted / totalPacketsSent * 100).toFixed(2)}%`);
+
+            socket.close();
+            fs.closeSync(fd);
+        }, 1000);
+    }
+
+    // 错误处理
+    socket.on('error', (err) => {
+        mainWindow.webContents.send('file-send-error', {error: `UDT错误: ${err.message}`});
+        isFinished = true;
+        cleanup();
+    });
+
+    // 清理函数
+    function cleanup() {
+        clearInterval(handshakeTimer);
+        clearInterval(retransmitTimer);
+        clearTimeout(rttProbeTimer);
+        if (socket) socket.close();
+        if (fd) fs.closeSync(fd);
     }
 }
 
