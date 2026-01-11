@@ -776,3 +776,133 @@ input[type="file"]::file-selector-button:hover {
     border-radius: 4px;
     font-family: 'Consolas', monospace;
 }
+
+/* 添加HPR-UDP专用样式 */
+.protocol-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-left: 8px;
+}
+
+.protocol-badge.tcp {
+    background: linear-gradient(135deg, rgba(0, 123, 255, 0.2) 0%, rgba(0, 123, 255, 0.1) 100%);
+    color: #007bff;
+    border: 1px solid rgba(0, 123, 255, 0.3);
+}
+
+.protocol-badge.udp {
+    background: linear-gradient(135deg, rgba(40, 167, 69, 0.2) 0%, rgba(40, 167, 69, 0.1) 100%);
+    color: #28a745;
+    border: 1px solid rgba(40, 167, 69, 0.3);
+}
+
+.protocol-badge.hpr-udp {
+    background: linear-gradient(135deg, rgba(220, 53, 69, 0.2) 0%, rgba(220, 53, 69, 0.1) 100%);
+    color: #dc3545;
+    border: 1px solid rgba(220, 53, 69, 0.3);
+}
+
+.hpr-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+    margin: 15px 0;
+    padding: 15px;
+    background: rgba(15, 52, 96, 0.3);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.hpr-stat-item {
+    text-align: center;
+}
+
+.hpr-stat-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.hpr-stat-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--accent);
+    font-family: 'Consolas', monospace;
+}
+
+.hpr-warning {
+    background: linear-gradient(135deg, rgba(255, 193, 7, 0.2) 0%, rgba(255, 193, 7, 0.1) 100%);
+    border: 1px solid rgba(255, 193, 7, 0.3);
+    color: #ffc107;
+    padding: 10px 15px;
+    border-radius: 8px;
+    margin: 10px 0;
+    font-size: 13px;
+}
+/* HPR-UDP 配置面板样式 */
+.udt-config-panel {
+    margin-top: 15px;
+    border: 1px dashed var(--border-color);
+    padding: 15px;
+    border-radius: 8px;
+    background: rgba(15, 52, 96, 0.3);
+    display: none; /* 默认隐藏 */
+}
+
+.udt-config-panel h4 {
+    color: var(--accent);
+    margin-bottom: 15px;
+    font-size: 16px;
+}
+
+.udt-config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.udt-config-grid .form-control {
+    margin-bottom: 0;
+}
+
+.udt-config-grid small {
+    color: var(--text-muted);
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+}
+
+.udt-info {
+    padding: 10px;
+    background: rgba(0, 242, 195, 0.1);
+    border-radius: 6px;
+    border-left: 3px solid var(--accent);
+}
+
+.udt-info-title {
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 5px;
+    font-size: 14px;
+}
+
+.udt-info-content {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+/* 文件选择行样式 */
+.file-select-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.file-select-row input {
+    flex: 1;
+}

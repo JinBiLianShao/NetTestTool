@@ -1,6 +1,5 @@
-// renderer.js - 完整版本 (支持 UDT)
-
-// ==================== 全局变量 ====================
+console.log('renderer.js 加载完成');
+// 全局变量
 let pingChart, speedChart;
 let isPinging = false;
 let isScanning = false;
@@ -31,20 +30,29 @@ let transferHistory = [];
 let currentTransfer = null;
 
 // 配置常量
-const PING_CHART_MAX_POINTS = 50;  // Ping图表最多显示50个点
-const SPEED_CHART_MAX_POINTS = 30; // 速度图表最多显示30个点
-const SMOOTHING_WINDOW = 5;        // 5秒滑动平均窗口
+const PING_CHART_MAX_POINTS = 50;
+const SPEED_CHART_MAX_POINTS = 30;
+const SMOOTHING_WINDOW = 5;
 
 // ==================== Tab切换 ====================
-function showTab(id) {
+// 确保切换选项卡时重新初始化
+function showTab(id, element) {
     document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.nav li').forEach(el => el.classList.remove('active'));
     document.getElementById(id).classList.add('active');
-    event.currentTarget.classList.add('active');
+    if (element) element.classList.add('active');
 
     if (id === 'info') loadInterfaces();
     if (id === 'scan') loadScanInterfaces();
-    if (id === 'throughput') toggleUdpConfig();
+    if (id === 'throughput') initThroughputTab();
+    if (id === 'transfer') {
+        console.log('切换到文件传输选项卡');
+        // 延迟一点确保DOM已更新
+        setTimeout(() => {
+            initTransferTab();
+            toggleUdtConfig();
+        }, 50);
+    }
 }
 
 // ==================== 1. 网络信息 ====================
@@ -111,12 +119,11 @@ window.api.onPingReply((text) => {
     out.textContent += text;
     out.scrollTop = out.scrollHeight;
 
-    // 更新统计 - 节流处理,避免频繁更新DOM
+    // 更新统计
     const now = Date.now();
-    if (now - pingStats.lastUpdateTime < 100) return; // 100ms内只更新一次
+    if (now - pingStats.lastUpdateTime < 100) return;
     pingStats.lastUpdateTime = now;
 
-    // 解析Ping结果
     pingStats.sent++;
 
     if (text.includes('回复') || text.includes('Reply from')) {
@@ -127,14 +134,14 @@ window.api.onPingReply((text) => {
         if (timeMatch) {
             let time;
             if (text.includes('time<1ms')) {
-                time = 0.5; // 小于1ms的用0.5表示
+                time = 0.5;
             } else {
                 time = parseInt(timeMatch[1] || timeMatch[2]);
             }
 
             pingStats.times.push(time);
 
-            // 更新图表 - 限制数据点数量
+            // 更新图表
             if (pingChart.data.labels.length >= PING_CHART_MAX_POINTS) {
                 pingChart.data.labels.shift();
                 pingChart.data.datasets[0].data.shift();
@@ -142,7 +149,7 @@ window.api.onPingReply((text) => {
 
             pingChart.data.labels.push(pingStats.sent);
             pingChart.data.datasets[0].data.push(time);
-            pingChart.update('none'); // 禁用动画提升性能
+            pingChart.update('none');
         }
     }
 
@@ -178,8 +185,6 @@ async function refreshArp() {
 }
 
 // ==================== 4. 网段扫描 ====================
-
-// 加载网络接口到下拉列表
 async function loadScanInterfaces() {
     const select = document.getElementById('scan-interface');
     try {
@@ -192,7 +197,6 @@ async function loadScanInterfaces() {
     }
 }
 
-// 开始/停止扫描
 function toggleScan() {
     const btn = document.getElementById('btn-scan');
     const select = document.getElementById('scan-interface');
@@ -230,14 +234,11 @@ function toggleScan() {
     }
 }
 
-// 处理扫描状态更新
 window.api.onScanStatus((data) => {
     const { status, message, total, current, found } = data;
 
-    // 更新进度文本
     document.getElementById('scan-progress-text').textContent = message || '扫描中...';
 
-    // 更新状态文本
     const statusMap = {
         calculating: '计算中',
         scanning: '扫描中',
@@ -247,53 +248,44 @@ window.api.onScanStatus((data) => {
     };
     document.getElementById('scan-status-text').textContent = statusMap[status] || '就绪';
 
-    // 更新统计
     if (total !== undefined && current !== undefined) {
         updateScanStats(total, current, found || 0);
 
-        // 更新进度条
         const percent = total > 0 ? Math.round((current / total) * 100) : 0;
         document.getElementById('scan-progress-percent').textContent = percent + '%';
         document.getElementById('scan-progress-bar').style.width = percent + '%';
     }
 
-    // 扫描完成或停止
     if (status === 'completed' || status === 'stopped' || status === 'error') {
         isScanning = false;
         const btn = document.getElementById('btn-scan');
         btn.textContent = '开始扫描';
         btn.style.background = '';
 
-        // 3秒后隐藏进度条
         setTimeout(() => {
             document.getElementById('scan-progress').style.display = 'none';
         }, 3000);
 
-        // 如果没有发现设备
         if (scanDevices.length === 0) {
             const deviceList = document.getElementById('device-list');
             deviceList.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 40px;">未发现在线设备</td></tr>';
         }
     }
 
-    // 错误处理
     if (status === 'error' && data.error) {
         alert('扫描错误: ' + data.error);
     }
 });
 
-// 处理发现新设备
 window.api.onScanDeviceFound((device) => {
     scanDevices.push(device);
     addDeviceToTable(device, scanDevices.length);
     updateDeviceCount();
 });
 
-// 添加设备到表格
 function addDeviceToTable(device, index) {
     const deviceList = document.getElementById('device-list');
 
-    // 如果是第一个设备，清空提示信息
     if (index === 1) {
         deviceList.innerHTML = '';
     }
@@ -314,41 +306,33 @@ function addDeviceToTable(device, index) {
     deviceList.appendChild(row);
 }
 
-// 更新扫描统计
 function updateScanStats(total, current, found) {
     document.getElementById('scan-total').textContent = total;
     document.getElementById('scan-current').textContent = current;
     document.getElementById('scan-found').textContent = found;
 }
 
-// 更新设备计数
 function updateDeviceCount() {
     document.getElementById('device-count').textContent = scanDevices.length;
 }
 
-// Ping单个设备
 function pingDevice(ip) {
     showTab('ping');
     document.getElementById('ping-target').value = ip;
-    // 不自动开始，让用户点击
 }
 
-// 导出设备列表
 function exportDeviceList() {
     if (scanDevices.length === 0) {
         alert('没有可导出的设备!');
         return;
     }
 
-    // 生成CSV内容
     const header = 'IP地址,MAC地址,厂商,响应时间\n';
     const rows = scanDevices.map(d =>
         `${d.ip},${d.mac},${d.vendor},${d.time}`
     ).join('\n');
 
     const csv = header + rows;
-
-    // 创建下载链接
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -359,15 +343,27 @@ function exportDeviceList() {
 }
 
 // ==================== 5. 吞吐量测试 ====================
+function initThroughputTab() {
+    // 初始化吞吐量选项卡
+    const protocolSelect = document.getElementById('tp-client-protocol');
+    if (protocolSelect) {
+        protocolSelect.innerHTML = `
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+            <option value="hpr-udp">HPR-UDP (高性能)</option>
+        `;
+        toggleUdpConfig();
+    }
+}
 
-// 切换UDP配置显示
 function toggleUdpConfig() {
     const protocol = document.getElementById('tp-client-protocol').value;
     const configDiv = document.getElementById('udp-config');
-    configDiv.style.display = protocol === 'udp' ? 'block' : 'none';
+    if (configDiv) {
+        configDiv.style.display = protocol === 'udp' ? 'block' : 'none';
+    }
 }
 
-// 启动服务端
 async function startServer() {
     if (isServerRunning) return;
 
@@ -378,14 +374,12 @@ async function startServer() {
     try {
         const res = await window.api.startServer({ port: 5201, protocol });
 
-        // 更新状态显示
         const isSuccess = !res.includes('失败');
         indicator.className = `status-indicator ${isSuccess ? 'active' : 'inactive'}`;
         statusEl.innerHTML = `<span class="status-indicator ${isSuccess ? 'active' : 'inactive'}"></span>${res}`;
 
         isServerRunning = isSuccess;
 
-        // 重置统计数据
         if (isSuccess) {
             speedHistory = [];
             peakSpeed = 0;
@@ -397,7 +391,6 @@ async function startServer() {
     }
 }
 
-// 启动/停止客户端
 function toggleClient() {
     const btn = document.getElementById('btn-tp-client');
     const ip = document.getElementById('tp-ip').value.trim();
@@ -417,7 +410,7 @@ function toggleClient() {
 
         // 构建配置
         const config = { ip, port: 5201, protocol };
-        if (protocol === 'udp') {
+        if (protocol === 'udp' || protocol === 'hpr-udp') {
             config.bandwidth = parseFloat(document.getElementById('tp-udp-bandwidth').value) || 10;
             config.size = parseInt(document.getElementById('tp-udp-size').value) || 1470;
         }
@@ -440,7 +433,6 @@ function toggleClient() {
         btn.style.background = '';
         isClientRunning = false;
 
-        // 停止计时器
         if (durationTimer) {
             clearTimeout(durationTimer);
             durationTimer = null;
@@ -448,7 +440,6 @@ function toggleClient() {
     }
 }
 
-// 更新测试时长
 function updateDuration() {
     if (!isClientRunning) return;
 
@@ -458,9 +449,8 @@ function updateDuration() {
     durationTimer = setTimeout(updateDuration, 1000);
 }
 
-// 处理吞吐量数据
-window.api.onTpData((rawSpeedMbps) => {
-    const speed = parseFloat(rawSpeedMbps);
+window.api.onTpData((data) => {
+    const speed = parseFloat(data.currentSpeed);
 
     // 存储原始速度数据
     speedHistory.push(speed);
@@ -468,7 +458,7 @@ window.api.onTpData((rawSpeedMbps) => {
         speedHistory.shift();
     }
 
-    // 计算滑动平均值(平滑后的速度)
+    // 计算滑动平均值
     const sum = speedHistory.reduce((a, b) => a + b, 0);
     const smoothedSpeed = sum / speedHistory.length;
 
@@ -477,18 +467,13 @@ window.api.onTpData((rawSpeedMbps) => {
         peakSpeed = speed;
     }
 
-    // 计算平均速度(所有历史数据)
-    const totalHistory = speedChart.data.datasets[0].data;
-    const avgSpeed = totalHistory.length > 0
-        ? totalHistory.reduce((a, b) => a + parseFloat(b), 0) / totalHistory.length
-        : 0;
-
     // 更新统计卡片
-    document.getElementById('current-speed').textContent = speed.toFixed(2) + ' Mbps';
-    document.getElementById('avg-speed').textContent = avgSpeed.toFixed(2) + ' Mbps';
-    document.getElementById('peak-speed').textContent = peakSpeed.toFixed(2) + ' Mbps';
+    document.getElementById('current-speed').textContent = data.currentSpeed + ' Mbps';
+    document.getElementById('avg-speed').textContent = data.avgSpeed + ' Mbps';
+    document.getElementById('peak-speed').textContent = data.peakSpeed + ' Mbps';
+    document.getElementById('test-duration').textContent = data.duration + 's';
 
-    // 更新图表 - 限制数据点数量
+    // 更新图表
     const now = new Date().toLocaleTimeString();
     if (speedChart.data.labels.length >= SPEED_CHART_MAX_POINTS) {
         speedChart.data.labels.shift();
@@ -497,15 +482,20 @@ window.api.onTpData((rawSpeedMbps) => {
 
     speedChart.data.labels.push(now);
     speedChart.data.datasets[0].data.push(smoothedSpeed.toFixed(2));
-    speedChart.update('none'); // 禁用动画提升性能
+    speedChart.update('none');
 });
 
-// 处理日志消息
+window.api.onTpStats((stats) => {
+    const logOutput = document.getElementById('tp-log-output');
+    logOutput.textContent += `[HPR状态] RTT: ${stats.rtt}ms, Window: ${stats.window}/${stats.windowSize}, RTO: ${stats.rto}ms\n`;
+    logOutput.scrollTop = logOutput.scrollHeight;
+});
+
 window.api.onTpLog((msg) => {
     const logOutput = document.getElementById('tp-log-output');
-    logOutput.textContent = msg;
+    logOutput.textContent += msg + '\n';
+    logOutput.scrollTop = logOutput.scrollHeight;
 
-    // 处理停止消息
     if (msg.includes('测试已停止') || msg.includes('错误')) {
         isClientRunning = false;
         isServerRunning = false;
@@ -519,18 +509,15 @@ window.api.onTpLog((msg) => {
         indicator.className = 'status-indicator inactive';
         statusEl.innerHTML = '<span class="status-indicator inactive"></span>未启动';
 
-        // 停止计时器
         if (durationTimer) {
             clearTimeout(durationTimer);
             durationTimer = null;
         }
 
-        // 清空历史记录
         speedHistory = [];
     }
 });
 
-// 重置吞吐量统计
 function resetThroughputStats() {
     document.getElementById('current-speed').textContent = '0 Mbps';
     document.getElementById('avg-speed').textContent = '0 Mbps';
@@ -539,8 +526,26 @@ function resetThroughputStats() {
 }
 
 // ==================== 6. 文件传输功能 ====================
+function initTransferTab() {
+    const protocolSelect = document.getElementById('transfer-protocol');
+    if (!protocolSelect) {
+        console.error('找不到 transfer-protocol 元素');
+        return;
+    }
 
-// 选择保存路径
+    // 更新协议选项
+    protocolSelect.innerHTML = `
+        <option value="tcp">TCP (默认)</option>
+        <option value="hpr-udp">HPR-UDP (高性能)</option>
+    `;
+
+    // 重新绑定事件
+    protocolSelect.onchange = toggleUdtConfig;
+
+    // 初始化显示状态
+    toggleUdtConfig();
+}
+
 async function selectSavePath() {
     const path = await window.api.selectSavePath();
     if (path) {
@@ -548,23 +553,6 @@ async function selectSavePath() {
     }
 }
 
-// 处理文件选择
-function handleFileSelect() {
-    const fileInput = document.getElementById('transfer-file');
-    const file = fileInput.files[0];
-
-    if (file) {
-        selectedFilePath = file.path;
-        document.getElementById('transfer-file-display').value = file.name;
-
-        // 更新统计信息
-        const sizeInMB = (file.size / (1024 * 1024)).toFixed(2);
-        document.getElementById('current-file').textContent = file.name;
-        document.getElementById('file-size').textContent = sizeInMB + ' MB';
-    }
-}
-
-// 启动接收服务器
 async function startTransferServer() {
     if (isTransferServerRunning) {
         window.api.stopTransferServer();
@@ -599,51 +587,58 @@ async function startTransferServer() {
     }
 }
 
-// 发送文件
-// 1. 定义新的选择函数
 async function triggerFileSelect() {
     const fileInfo = await window.api.selectSendFile();
     if (fileInfo) {
         selectedFilePath = fileInfo.path;
         document.getElementById('transfer-file-display').value = fileInfo.name;
 
-        // 更新界面显示
         const sizeInMB = (fileInfo.size / (1024 * 1024)).toFixed(2);
         document.getElementById('current-file').textContent = fileInfo.name;
         document.getElementById('file-size').textContent = sizeInMB + ' MB';
     }
 }
 
-// 2. 确保 sendFile 函数使用的是正确的变量
-
-// ==================== UDT配置相关函数 ====================
-
-// 切换UDT配置显示
+// 更新 toggleUdtConfig 函数
 function toggleUdtConfig() {
-    const protocol = document.getElementById('transfer-protocol').value;
+    console.log('toggleUdtConfig 被调用');
+
+    const protocolSelect = document.getElementById('transfer-protocol');
+    if (!protocolSelect) {
+        console.error('找不到 transfer-protocol 元素');
+        return;
+    }
+
+    const protocol = protocolSelect.value;
+    console.log('当前协议:', protocol);
+
     const udtConfig = document.getElementById('udt-config');
-    udtConfig.style.display = protocol === 'udt' ? 'block' : 'none';
+    if (!udtConfig) {
+        console.error('找不到 udt-config 元素');
+        return;
+    }
+
+    console.log('udt-config 显示状态:', protocol === 'hpr-udp' ? '显示' : '隐藏');
+    udtConfig.style.display = protocol === 'hpr-udp' ? 'block' : 'none';
 }
 
-// 获取UDT配置参数
-function getUdtConfig() {
+// 更新获取配置的函数
+function getHprUdpConfig() {
     return {
-        windowSize: parseInt(document.getElementById('udt-window-size').value) || 32,
-        packetSize: parseInt(document.getElementById('udt-packet-size').value) || 1400,
-        rto: parseInt(document.getElementById('udt-rto').value) || 1000,
-        maxRetransmit: parseInt(document.getElementById('udt-max-retrans').value) || 5,
-        sendInterval: parseInt(document.getElementById('udt-send-interval').value) || 10,
-        bandwidth: parseInt(document.getElementById('udt-bandwidth').value) || 100,
-        fastRetransmit: document.getElementById('udt-fast-retransmit').checked,
-        congestionControl: document.getElementById('udt-congestion-control').checked
+        packetSize: parseInt(document.getElementById('udt-packet-size').value) || 8192,
+        windowSize: parseInt(document.getElementById('udt-window-size').value) || 32768,
+        rto: parseInt(document.getElementById('udt-rto').value) || 100
     };
 }
 
-// 更新UDT配置说明
+
 function updateUdtConfigInfo() {
-    const config = getUdtConfig();
-    logTransfer(`UDT配置: 窗口=${config.windowSize} | 包大小=${config.packetSize}字节 | RTO=${config.rto}ms | 最大重传=${config.maxRetransmit}`);
+    const config = getHprUdpConfig();
+    logTransfer(`HPR-UDP配置: 包大小=${config.packetSize}字节 | 窗口=${config.windowSize} | RTO=${config.rto}ms`);
 }
+
+
+// 发送文件函数更新
 function sendFile() {
     const ip = document.getElementById('transfer-target-ip').value.trim();
     if (!ip) {
@@ -661,25 +656,26 @@ function sendFile() {
         ip: ip,
         port: 5202,
         filePath: selectedFilePath,
-        protocol: protocol
+        protocol: protocol === 'hpr-udp' ? 'hpr-udp' : 'tcp'
     };
 
-    // 如果是UDT协议，添加配置参数
-    if (protocol === 'udt') {
-        config.udtConfig = getUdtConfig();
+    if (protocol === 'hpr-udp') {
+        config.hprUdpConfig = getHprUdpConfig();
         updateUdtConfigInfo();
     }
 
     window.api.sendFile(config);
 
+    // 显示进度条
     document.getElementById('transfer-progress').style.display = 'block';
     document.getElementById('transfer-progress-text').textContent = '正在发送...';
+    document.getElementById('transfer-progress-percent').textContent = '0%';
+    document.getElementById('transfer-progress-bar').style.width = '0%';
+    document.getElementById('transfer-speed').textContent = '0 MB/s';
+    document.getElementById('transfer-bytes').textContent = '0 B';
+    document.getElementById('transfer-eta').textContent = '--:--';
 }
 
-// 在初始化函数中添加
-
-
-// 日志输出
 function logTransfer(msg) {
     const logOutput = document.getElementById('transfer-log-output');
     const timestamp = new Date().toLocaleTimeString();
@@ -687,7 +683,6 @@ function logTransfer(msg) {
     logOutput.scrollTop = logOutput.scrollHeight;
 }
 
-// 格式化文件大小
 function formatFileSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
@@ -695,7 +690,6 @@ function formatFileSize(bytes) {
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
-// 格式化剩余时间
 function formatETA(seconds) {
     if (!isFinite(seconds) || seconds <= 0) return '--:--';
 
@@ -704,13 +698,11 @@ function formatETA(seconds) {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-// 添加传输历史记录
 function addTransferHistory(record) {
     transferHistory.unshift(record);
     updateTransferHistoryTable();
 }
 
-// 更新传输历史表格
 function updateTransferHistoryTable() {
     const tbody = document.getElementById('transfer-history');
     document.getElementById('transfer-history-count').textContent = transferHistory.length;
@@ -739,7 +731,6 @@ function updateTransferHistoryTable() {
     `).join('');
 }
 
-// 清空传输历史
 function clearTransferHistory() {
     if (transferHistory.length === 0) return;
 
@@ -751,13 +742,10 @@ function clearTransferHistory() {
 }
 
 // ==================== 文件传输事件监听 ====================
-
-// 监听日志消息
 window.api.onTransferLog((msg) => {
     logTransfer(msg);
 });
 
-// 接收端 - 文件开始接收
 window.api.onFileTransferStart((data) => {
     currentTransfer = {
         type: 'receive',
@@ -775,7 +763,6 @@ window.api.onFileTransferStart((data) => {
     document.getElementById('md5-result').style.display = 'none';
 });
 
-// 接收端 - 进度更新
 window.api.onFileTransferProgress((data) => {
     const { received, total, progress, speed } = data;
 
@@ -786,26 +773,21 @@ window.api.onFileTransferProgress((data) => {
     document.getElementById('transfer-bytes').textContent = formatFileSize(received);
     document.getElementById('transfer-total').textContent = formatFileSize(total);
 
-    // 计算预计剩余时间
     const speedBytes = parseFloat(speed) * 1024 * 1024;
     const remainingBytes = total - received;
     const eta = speedBytes > 0 ? remainingBytes / speedBytes : 0;
     document.getElementById('transfer-eta').textContent = formatETA(eta);
 });
 
-// 接收端 - 接收完成
 window.api.onFileTransferComplete((data) => {
     const { fileName, fileSize, sourceMD5, receivedMD5, match, duration, protocol } = data;
 
-    // 更新进度为100%
     document.getElementById('transfer-progress-percent').textContent = '100%';
     document.getElementById('transfer-progress-bar').style.width = '100%';
     document.getElementById('transfer-progress-text').textContent = match ? '✅ 接收完成' : '⚠️ MD5校验失败';
 
-    // 显示MD5值
     document.getElementById('received-md5').textContent = receivedMD5;
 
-    // 显示MD5校验结果
     const resultDiv = document.getElementById('md5-result');
     resultDiv.style.display = 'block';
 
@@ -821,7 +803,6 @@ window.api.onFileTransferComplete((data) => {
         resultDiv.textContent = '❌ MD5校验失败 - 文件可能损坏';
     }
 
-    // 添加到历史记录
     addTransferHistory({
         type: 'receive',
         fileName: fileName,
@@ -833,13 +814,11 @@ window.api.onFileTransferComplete((data) => {
         protocol: protocol
     });
 
-    // 3秒后隐藏进度条
     setTimeout(() => {
         document.getElementById('transfer-progress').style.display = 'none';
     }, 3000);
 });
 
-// 接收端 - 错误
 window.api.onFileTransferError((data) => {
     document.getElementById('transfer-progress-text').textContent = '❌ 接收失败';
     document.getElementById('transfer-progress-bar').style.background = 'var(--danger)';
@@ -850,8 +829,8 @@ window.api.onFileTransferError((data) => {
     }, 3000);
 });
 
-// 发送端 - 开始发送
 window.api.onFileSendStart((data) => {
+    console.log('onFileSendStart 事件触发:', data);
     currentTransfer = {
         type: 'send',
         fileName: data.fileName,
@@ -867,8 +846,8 @@ window.api.onFileSendStart((data) => {
     document.getElementById('md5-result').style.display = 'none';
 });
 
-// 发送端 - 进度更新
 window.api.onFileSendProgress((data) => {
+    console.log('onFileSendProgress 事件触发:', data);
     const { sent, total, progress, speed } = data;
 
     document.getElementById('transfer-progress-text').textContent = '正在发送...';
@@ -878,22 +857,20 @@ window.api.onFileSendProgress((data) => {
     document.getElementById('transfer-bytes').textContent = formatFileSize(sent);
     document.getElementById('transfer-total').textContent = formatFileSize(total);
 
-    // 计算预计剩余时间
     const speedBytes = parseFloat(speed) * 1024 * 1024;
     const remainingBytes = total - sent;
     const eta = speedBytes > 0 ? remainingBytes / speedBytes : 0;
     document.getElementById('transfer-eta').textContent = formatETA(eta);
 });
 
-// 发送端 - 发送完成
 window.api.onFileSendComplete((data) => {
+    console.log('onFileSendComplete 事件触发:', data);
     const { fileName, fileSize, md5, duration, protocol } = data;
 
     document.getElementById('transfer-progress-percent').textContent = '100%';
     document.getElementById('transfer-progress-bar').style.width = '100%';
     document.getElementById('transfer-progress-text').textContent = '✅ 发送完成';
 
-    // 显示成功消息
     const resultDiv = document.getElementById('md5-result');
     resultDiv.style.display = 'block';
     resultDiv.style.background = 'linear-gradient(135deg, rgba(0, 242, 195, 0.2) 0%, rgba(0, 234, 255, 0.1) 100%)';
@@ -901,7 +878,6 @@ window.api.onFileSendComplete((data) => {
     resultDiv.style.border = '2px solid var(--success)';
     resultDiv.textContent = '✅ 文件发送成功 - 等待接收端校验';
 
-    // 添加到历史记录
     addTransferHistory({
         type: 'send',
         fileName: fileName,
@@ -913,18 +889,15 @@ window.api.onFileSendComplete((data) => {
         protocol: protocol
     });
 
-    // 3秒后隐藏进度条
     setTimeout(() => {
         document.getElementById('transfer-progress').style.display = 'none';
     }, 3000);
 });
 
-// 发送端 - 错误
 window.api.onFileSendError((data) => {
     document.getElementById('transfer-progress-text').textContent = '❌ 发送失败';
     document.getElementById('transfer-progress-bar').style.background = 'var(--danger)';
 
-    // 显示错误消息
     const resultDiv = document.getElementById('md5-result');
     resultDiv.style.display = 'block';
     resultDiv.style.background = 'linear-gradient(135deg, rgba(255, 68, 68, 0.2) 0%, rgba(255, 107, 138, 0.1) 100%)';
@@ -961,7 +934,7 @@ function initCharts() {
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            animation: false, // 禁用动画提升性能
+            animation: false,
             scales: {
                 y: {
                     beginAtZero: true,
@@ -978,16 +951,7 @@ function initCharts() {
                         color: '#e9ecef',
                         font: { size: 14, weight: '600' }
                     }
-                },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false
                 }
-            },
-            interaction: {
-                mode: 'nearest',
-                axis: 'x',
-                intersect: false
             }
         }
     });
@@ -1013,7 +977,7 @@ function initCharts() {
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            animation: false, // 禁用动画提升性能
+            animation: false,
             scales: {
                 y: {
                     beginAtZero: true,
@@ -1030,16 +994,7 @@ function initCharts() {
                         color: '#e9ecef',
                         font: { size: 14, weight: '600' }
                     }
-                },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false
                 }
-            },
-            interaction: {
-                mode: 'nearest',
-                axis: 'x',
-                intersect: false
             }
         }
     });
@@ -1047,18 +1002,25 @@ function initCharts() {
 
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM 加载完成');
+
     loadInterfaces();
     loadScanInterfaces();
     initCharts();
-    toggleUdtConfig(); // 添加这一行
+    initThroughputTab();
+    initTransferTab();
 
-    // 监听UDT配置变化
-    document.getElementById('udt-window-size').addEventListener('change', updateUdtConfigInfo);
-    document.getElementById('udt-packet-size').addEventListener('change', updateUdtConfigInfo);
-    document.getElementById('udt-rto').addEventListener('change', updateUdtConfigInfo);
+    // 确保协议选择器有事件监听
+    const transferProtocol = document.getElementById('transfer-protocol');
+    if (transferProtocol) {
+        transferProtocol.addEventListener('change', toggleUdtConfig);
+        console.log('已绑定 transfer-protocol change 事件');
+    }
+
+    // 测试：手动触发一次以初始化显示状态
+    setTimeout(toggleUdtConfig, 100);
 });
 
-// 页面卸载时清理资源
 window.addEventListener('beforeunload', () => {
     if (isPinging) {
         window.api.stopPing();
@@ -1071,5 +1033,23 @@ window.addEventListener('beforeunload', () => {
     }
     if (durationTimer) {
         clearTimeout(durationTimer);
+    }
+});
+
+// 添加键盘快捷键调试
+document.addEventListener('keydown', (e) => {
+    // Ctrl+Shift+D 显示调试信息
+    if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        console.log('=== 调试信息 ===');
+        console.log('当前选项卡:', document.querySelector('.tab-pane.active').id);
+        console.log('transfer-protocol:', document.getElementById('transfer-protocol')?.value);
+        console.log('udt-config:', document.getElementById('udt-config')?.style.display);
+
+        // 显示所有相关元素
+        const elements = ['transfer-protocol', 'udt-config', 'transfer-target-ip'];
+        elements.forEach(id => {
+            const el = document.getElementById(id);
+            console.log(`${id}:`, el ? '存在' : '不存在', el);
+        });
     }
 });

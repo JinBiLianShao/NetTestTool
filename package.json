@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "cnpm": "^9.4.0",
-    "iconv-lite": "^0.7.0"
+    "iconv-lite": "^0.7.2"
   },
   "devDependencies": {
     "app-builder-lib": "^26.0.12",
