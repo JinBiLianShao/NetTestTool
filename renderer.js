@@ -1,419 +1,775 @@
-// renderer.js - 完整版本 (支持 UDT)
+// ================================================================
+//                     NetTestTool Pro - Renderer
+// ================================================================
+// 模块化重构版本 - 集成HRUFT可靠UDP传输
+// ================================================================
 
-// ==================== 全局变量 ====================
-let pingChart, speedChart;
-let isPinging = false;
-let isScanning = false;
-let isClientRunning = false;
-let isServerRunning = false;
-let isTransferServerRunning = false;
-let selectedFilePath = null;
-
-// Ping统计数据
-let pingStats = {
-    sent: 0,
-    received: 0,
-    times: [],
-    lastUpdateTime: Date.now()
+// ==================== 全局配置和常量 ====================
+const CONFIG = {
+    PING_CHART_MAX_POINTS: 50,      // Ping图表最多显示50个点
+    SPEED_CHART_MAX_POINTS: 30,     // 速度图表最多显示30个点
+    SMOOTHING_WINDOW: 5,            // 5秒滑动平均窗口
+    DEFAULT_HRUFT_PORT: 5202,       // HRUFT默认端口
+    DEFAULT_TCP_PORT: 5203          // TCP文件传输默认端口
 };
 
-// 扫描统计数据
-let scanDevices = [];
+// ==================== 全局状态管理器 ====================
+const StateManager = {
+    // 图表实例
+    charts: {
+        ping: null,
+        speed: null
+    },
 
-// 吞吐量统计数据
-let speedHistory = [];
-let peakSpeed = 0;
-let testStartTime = null;
-let durationTimer = null;
+    // 功能状态
+    status: {
+        pinging: false,
+        scanning: false,
+        clientRunning: false,
+        serverRunning: false,
+        transferServerRunning: false
+    },
 
-// 文件传输数据
-let transferHistory = [];
-let currentTransfer = null;
+    // 统计数据
+    stats: {
+        ping: {
+            sent: 0,
+            received: 0,
+            times: [],
+            lastUpdateTime: Date.now()
+        },
+        scan: {
+            devices: [],
+            current: 0,
+            total: 0,
+            found: 0
+        },
+        throughput: {
+            history: [],
+            peakSpeed: 0,
+            startTime: null
+        },
+        transfer: {
+            history: [],
+            current: null,
+            selectedFile: null
+        }
+    },
 
-// 配置常量
-const PING_CHART_MAX_POINTS = 50;  // Ping图表最多显示50个点
-const SPEED_CHART_MAX_POINTS = 30; // 速度图表最多显示30个点
-const SMOOTHING_WINDOW = 5;        // 5秒滑动平均窗口
+    // 重置所有状态
+    resetAll() {
+        this.stats.ping = { sent: 0, received: 0, times: [], lastUpdateTime: Date.now() };
+        this.stats.scan = { devices: [], current: 0, total: 0, found: 0 };
+        this.stats.throughput = { history: [], peakSpeed: 0, startTime: null };
+        this.status = {
+            pinging: false,
+            scanning: false,
+            clientRunning: false,
+            serverRunning: false,
+            transferServerRunning: false
+        };
+    },
 
-// ==================== Tab切换 ====================
-function showTab(id) {
-    document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
-    document.querySelectorAll('.nav li').forEach(el => el.classList.remove('active'));
-    document.getElementById(id).classList.add('active');
-    event.currentTarget.classList.add('active');
-
-    if (id === 'info') loadInterfaces();
-    if (id === 'scan') loadScanInterfaces();
-    if (id === 'throughput') toggleUdpConfig();
-}
-
-// ==================== 1. 网络信息 ====================
-async function loadInterfaces() {
-    const list = document.getElementById('interface-list');
-    list.innerHTML = '<div style="grid-column: 1/-1; text-align: center;"><div class="loading"></div></div>';
-
-    try {
-        const interfaces = await window.api.getInterfaces();
-        list.innerHTML = interfaces.map(iface => `
-            <div class="card">
-                <h3>${iface.name}</h3>
-                <p><strong>IP:</strong> <span>${iface.ip}</span></p>
-                <p><strong>MAC:</strong> <span>${iface.mac}</span></p>
-                <p><strong>掩码:</strong> <span>${iface.netmask}</span></p>
-            </div>
-        `).join('');
-    } catch (error) {
-        list.innerHTML = '<p style="color: var(--danger);">加载失败: ' + error.message + '</p>';
-    }
-}
-
-// ==================== 2. Ping测试 ====================
-function togglePing() {
-    const btn = event.currentTarget;
-    const target = document.getElementById('ping-target').value.trim();
-    const interval = parseFloat(document.getElementById('ping-interval').value) || 1;
-    const size = parseInt(document.getElementById('ping-size').value) || 32;
-
-    if (!target) {
-        alert('请输入目标地址!');
-        return;
-    }
-
-    if (!isPinging) {
-        // 重置统计数据
-        pingStats = { sent: 0, received: 0, times: [], lastUpdateTime: Date.now() };
-        updatePingStats();
-
-        // 重置图表
-        pingChart.data.labels = [];
-        pingChart.data.datasets[0].data = [];
-        pingChart.update('none');
-
-        // 清空输出
-        document.getElementById('ping-output').textContent = `开始 Ping ${target}...\n`;
-
-        // 启动Ping
-        window.api.startPing({ target, interval, size });
-        btn.textContent = '停止 Ping';
-        btn.style.background = 'linear-gradient(135deg, var(--danger) 0%, #c0392b 100%)';
-        isPinging = true;
-    } else {
-        window.api.stopPing();
-        btn.textContent = '开始 Ping';
-        btn.style.background = '';
-        isPinging = false;
-    }
-}
-
-// 处理Ping响应
-window.api.onPingReply((text) => {
-    const out = document.getElementById('ping-output');
-    out.textContent += text;
-    out.scrollTop = out.scrollHeight;
-
-    // 更新统计 - 节流处理,避免频繁更新DOM
-    const now = Date.now();
-    if (now - pingStats.lastUpdateTime < 100) return; // 100ms内只更新一次
-    pingStats.lastUpdateTime = now;
-
-    // 解析Ping结果
-    pingStats.sent++;
-
-    if (text.includes('回复') || text.includes('Reply from')) {
-        pingStats.received++;
-
-        // 提取延迟时间
-        const timeMatch = text.match(/时间=(\d+)ms|time=(\d+)ms|time<1ms/i);
-        if (timeMatch) {
-            let time;
-            if (text.includes('time<1ms')) {
-                time = 0.5; // 小于1ms的用0.5表示
-            } else {
-                time = parseInt(timeMatch[1] || timeMatch[2]);
-            }
-
-            pingStats.times.push(time);
-
-            // 更新图表 - 限制数据点数量
-            if (pingChart.data.labels.length >= PING_CHART_MAX_POINTS) {
-                pingChart.data.labels.shift();
-                pingChart.data.datasets[0].data.shift();
-            }
-
-            pingChart.data.labels.push(pingStats.sent);
-            pingChart.data.datasets[0].data.push(time);
-            pingChart.update('none'); // 禁用动画提升性能
+    // 重置特定模块状态
+    resetModule(moduleName) {
+        if (moduleName === 'ping') {
+            this.stats.ping = { sent: 0, received: 0, times: [], lastUpdateTime: Date.now() };
+        } else if (moduleName === 'scan') {
+            this.stats.scan = { devices: [], current: 0, total: 0, found: 0 };
+        } else if (moduleName === 'throughput') {
+            this.stats.throughput = { history: [], peakSpeed: 0, startTime: null };
         }
     }
+};
 
-    updatePingStats();
-});
+// ==================== 工具函数模块 ====================
+const Utils = {
+    // 格式化文件大小
+    formatFileSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+        if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    },
 
-// 更新Ping统计卡片
-function updatePingStats() {
-    document.getElementById('ping-sent').textContent = pingStats.sent;
-    document.getElementById('ping-received').textContent = pingStats.received;
+    // 格式化剩余时间
+    formatETA(seconds) {
+        if (!isFinite(seconds) || seconds <= 0) return '--:--';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    },
 
-    const lossRate = pingStats.sent > 0
-        ? ((1 - pingStats.received / pingStats.sent) * 100).toFixed(1)
-        : 0;
-    document.getElementById('ping-loss').textContent = lossRate + '%';
+    // 计算传输速度
+    calculateSpeed(bytes, durationMs) {
+        if (durationMs <= 0) return 0;
+        const speedMBps = (bytes / (1024 * 1024)) / (durationMs / 1000);
+        return speedMBps.toFixed(2);
+    },
 
-    const avgTime = pingStats.times.length > 0
-        ? (pingStats.times.reduce((a, b) => a + b, 0) / pingStats.times.length).toFixed(1)
-        : 0;
-    document.getElementById('ping-avg').textContent = avgTime + 'ms';
-}
+    // 生成设备导出CSV
+    generateDeviceCSV(devices) {
+        const header = '序号,IP地址,MAC地址,厂商,响应时间\n';
+        const rows = devices.map((device, index) =>
+            `${index + 1},${device.ip},${device.mac},${device.vendor},${device.time}`
+        ).join('\n');
+        return header + rows;
+    },
 
-// ==================== 3. ARP表 ====================
-async function refreshArp() {
-    const out = document.getElementById('arp-output');
-    out.textContent = '正在读取 ARP 表...';
-    try {
-        const result = await window.api.getArp();
-        out.textContent = result;
-    } catch (error) {
-        out.textContent = '读取失败: ' + error.message;
+    // 创建下载链接
+    createDownloadLink(content, filename, type = 'text/csv') {
+        const blob = new Blob([content], { type: `${type};charset=utf-8;` });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        return { link, url };
     }
-}
+};
 
-// ==================== 4. 网段扫描 ====================
+// ==================== UI控制模块 ====================
+const UIController = {
+    // Tab切换
+    showTab(tabId) {
+        // 隐藏所有tab内容
+        document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
 
-// 加载网络接口到下拉列表
-async function loadScanInterfaces() {
-    const select = document.getElementById('scan-interface');
-    try {
-        const interfaces = await window.api.getInterfaces();
-        select.innerHTML = interfaces.map(iface =>
-            `<option value="${iface.ip}|${iface.netmask}">${iface.name} (${iface.ip})</option>`
-        ).join('');
-    } catch (error) {
-        select.innerHTML = '<option value="">加载失败</option>';
+        // 移除所有导航项的活动状态
+        document.querySelectorAll('.nav li').forEach(el => el.classList.remove('active'));
+
+        // 显示选中的tab
+        const tabElement = document.getElementById(tabId);
+        if (tabElement) {
+            tabElement.classList.add('active');
+
+            // 根据tab加载特定数据
+            if (tabId === 'info') {
+                NetworkInfoModule.loadInterfaces();
+            } else if (tabId === 'scan') {
+                NetworkScanModule.loadScanInterfaces();
+            } else if (tabId === 'transfer') {
+                FileTransferModule.toggleUdtConfig();
+            }
+        }
+
+        // 设置导航项为活动状态
+        if (event && event.currentTarget) {
+            event.currentTarget.classList.add('active');
+        }
+    },
+
+    // 更新进度条
+    updateProgress(progressId, percent, text) {
+        const progressBar = document.getElementById(`${progressId}-progress-bar`);
+        const progressText = document.getElementById(`${progressId}-progress-text`);
+        const progressPercent = document.getElementById(`${progressId}-progress-percent`);
+
+        if (progressBar) progressBar.style.width = `${percent}%`;
+        if (progressText) progressText.textContent = text;
+        if (progressPercent) progressPercent.textContent = `${percent.toFixed(1)}%`;
+    },
+
+    // 显示/隐藏元素
+    toggleElement(elementId, show) {
+        const element = document.getElementById(elementId);
+        if (element) {
+            element.style.display = show ? 'block' : 'none';
+        }
+    },
+
+    // 更新状态指示灯
+    updateStatusIndicator(elementId, isActive, message) {
+        const element = document.getElementById(elementId);
+        if (element) {
+            const indicator = element.querySelector('.status-indicator');
+            if (indicator) {
+                indicator.className = `status-indicator ${isActive ? 'active' : 'inactive'}`;
+            }
+            if (message) {
+                element.innerHTML = `<span class="status-indicator ${isActive ? 'active' : 'inactive'}"></span>${message}`;
+            }
+        }
+    },
+
+    // 更新统计卡片
+    updateStatCard(elementId, value, label = '') {
+        const element = document.getElementById(elementId);
+        if (element) {
+            if (label) {
+                const labelElement = element.querySelector('.stat-label');
+                if (labelElement) labelElement.textContent = label;
+            }
+
+            const valueElement = element.querySelector('.stat-value');
+            if (valueElement) valueElement.textContent = value;
+        }
+    },
+
+    // 清空表格
+    clearTable(tableBodyId) {
+        const tbody = document.getElementById(tableBodyId);
+        if (tbody) {
+            tbody.innerHTML = '';
+        }
+    },
+
+    // 添加表格行
+    addTableRow(tableBodyId, rowData) {
+        const tbody = document.getElementById(tableBodyId);
+        if (!tbody) return;
+
+        const row = document.createElement('tr');
+        row.className = rowData.className || '';
+        row.innerHTML = rowData.html;
+
+        if (rowData.animation) {
+            row.style.animation = 'slideIn 0.4s ease';
+        }
+
+        tbody.appendChild(row);
+        return row;
+    },
+
+    // 显示消息
+    showMessage(type, message, duration = 3000) {
+        // 创建消息元素
+        const messageEl = document.createElement('div');
+        messageEl.className = `message-${type}`;
+        messageEl.textContent = message;
+        messageEl.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            color: white;
+            z-index: 1000;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            animation: slideInRight 0.3s ease;
+        `;
+
+        // 设置颜色
+        if (type === 'success') {
+            messageEl.style.background = 'linear-gradient(135deg, #00f2c3 0%, #00b894 100%)';
+        } else if (type === 'error') {
+            messageEl.style.background = 'linear-gradient(135deg, #ff4444 0%, #c0392b 100%)';
+        } else if (type === 'warning') {
+            messageEl.style.background = 'linear-gradient(135deg, #ffa500 0%, #f39c12 100%)';
+        } else {
+            messageEl.style.background = 'linear-gradient(135deg, #3498db 0%, #2980b9 100%)';
+        }
+
+        // 添加到页面
+        document.body.appendChild(messageEl);
+
+        // 自动移除
+        setTimeout(() => {
+            messageEl.style.animation = 'fadeOut 0.3s ease';
+            setTimeout(() => {
+                if (messageEl.parentNode) {
+                    messageEl.parentNode.removeChild(messageEl);
+                }
+            }, 300);
+        }, duration);
+    },
+
+    // 添加CSS动画
+    addAnimations() {
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideInRight {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes fadeOut {
+                from { opacity: 1; }
+                to { opacity: 0; }
+            }
+            @keyframes slideIn {
+                from { transform: translateX(-20px); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            .message-success, .message-error, .message-warning, .message-info {
+                animation: slideInRight 0.3s ease;
+            }
+        `;
+        document.head.appendChild(style);
     }
-}
+};
 
-// 开始/停止扫描
-function toggleScan() {
-    const btn = document.getElementById('btn-scan');
-    const select = document.getElementById('scan-interface');
+// ==================== 网络信息模块 ====================
+const NetworkInfoModule = {
+    async loadInterfaces() {
+        const list = document.getElementById('interface-list');
+        if (!list) return;
 
-    if (!isScanning) {
-        const value = select.value;
-        if (!value) {
-            alert('请选择网络接口!');
+        list.innerHTML = '<div style="grid-column: 1/-1; text-align: center;"><div class="loading"></div></div>';
+
+        try {
+            const interfaces = await window.api.getInterfaces();
+
+            if (interfaces.length === 0) {
+                list.innerHTML = '<p style="color: var(--text-muted); grid-column: 1/-1; text-align: center;">未发现网络接口</p>';
+                return;
+            }
+
+            list.innerHTML = interfaces.map(iface => `
+                <div class="card">
+                    <h3>${iface.name}</h3>
+                    <p><strong>IP地址:</strong> <span style="font-family: monospace;">${iface.ip}</span></p>
+                    <p><strong>MAC地址:</strong> <span style="font-family: monospace;">${iface.mac}</span></p>
+                    <p><strong>子网掩码:</strong> <span style="font-family: monospace;">${iface.netmask}</span></p>
+                </div>
+            `).join('');
+
+        } catch (error) {
+            list.innerHTML = '<p style="color: var(--danger); grid-column: 1/-1; text-align: center;">加载失败: ' + error.message + '</p>';
+        }
+    }
+};
+
+// ==================== Ping测试模块 ====================
+const PingTestModule = {
+    // 开始/停止Ping测试
+    togglePing() {
+        const target = document.getElementById('ping-target').value.trim();
+        const interval = parseFloat(document.getElementById('ping-interval').value) || 1;
+        const size = parseInt(document.getElementById('ping-size').value) || 32;
+
+        if (!target) {
+            UIController.showMessage('warning', '请输入目标地址（IP或域名）');
             return;
         }
 
-        const [ip, netmask] = value.split('|');
+        if (!StateManager.status.pinging) {
+            this.startPing(target, interval, size);
+        } else {
+            this.stopPing();
+        }
+    },
+
+    // 开始Ping
+    startPing(target, interval, size) {
+        // 重置统计数据
+        StateManager.resetModule('ping');
+        this.updatePingStats();
+
+        // 重置图表
+        if (StateManager.charts.ping) {
+            StateManager.charts.ping.data.labels = [];
+            StateManager.charts.ping.data.datasets[0].data = [];
+            StateManager.charts.ping.update('none');
+        }
+
+        // 清空输出
+        const output = document.getElementById('ping-output');
+        if (output) {
+            output.textContent = `开始 Ping ${target}...\n`;
+        }
+
+        // 启动Ping
+        window.api.startPing({ target, interval, size });
+
+        // 更新UI
+        const btn = document.querySelector('#ping button');
+        if (btn) {
+            btn.textContent = '停止 Ping';
+            btn.style.background = 'linear-gradient(135deg, var(--danger) 0%, #c0392b 100%)';
+        }
+
+        StateManager.status.pinging = true;
+    },
+
+    // 停止Ping
+    stopPing() {
+        window.api.stopPing();
+
+        // 更新UI
+        const btn = document.querySelector('#ping button');
+        if (btn) {
+            btn.textContent = '开始 Ping';
+            btn.style.background = '';
+        }
+
+        StateManager.status.pinging = false;
+    },
+
+    // 处理Ping响应
+    handlePingReply(text) {
+        const output = document.getElementById('ping-output');
+        if (output) {
+            output.textContent += text;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        // 更新统计
+        const now = Date.now();
+        if (now - StateManager.stats.ping.lastUpdateTime < 100) return;
+
+        StateManager.stats.ping.lastUpdateTime = now;
+        StateManager.stats.ping.sent++;
+
+        if (text.includes('回复') || text.includes('Reply from')) {
+            StateManager.stats.ping.received++;
+
+            // 提取延迟时间
+            const timeMatch = text.match(/时间=(\d+)ms|time=(\d+)ms|time<1ms/i);
+            if (timeMatch) {
+                let time;
+                if (text.includes('time<1ms')) {
+                    time = 0.5;
+                } else {
+                    time = parseInt(timeMatch[1] || timeMatch[2]);
+                }
+
+                StateManager.stats.ping.times.push(time);
+                this.updatePingChart(time);
+            }
+        }
+
+        this.updatePingStats();
+    },
+
+    // 更新Ping统计显示
+    updatePingStats() {
+        const stats = StateManager.stats.ping;
+
+        UIController.updateStatCard('ping-sent', stats.sent);
+        UIController.updateStatCard('ping-received', stats.received);
+
+        // 计算丢包率
+        const lossRate = stats.sent > 0 ? ((1 - stats.received / stats.sent) * 100).toFixed(1) : 0;
+        UIController.updateStatCard('ping-loss', lossRate + '%');
+
+        // 计算平均延迟
+        const avgTime = stats.times.length > 0 ?
+            (stats.times.reduce((a, b) => a + b, 0) / stats.times.length).toFixed(1) : 0;
+        UIController.updateStatCard('ping-avg', avgTime + 'ms');
+    },
+
+    // 更新Ping图表
+    updatePingChart(time) {
+        const chart = StateManager.charts.ping;
+        if (!chart) return;
+
+        // 限制数据点数量
+        if (chart.data.labels.length >= CONFIG.PING_CHART_MAX_POINTS) {
+            chart.data.labels.shift();
+            chart.data.datasets[0].data.shift();
+        }
+
+        chart.data.labels.push(StateManager.stats.ping.sent);
+        chart.data.datasets[0].data.push(time);
+        chart.update('none');
+    }
+};
+
+// ==================== 网段扫描模块 ====================
+const NetworkScanModule = {
+    // 加载网络接口下拉列表
+    async loadScanInterfaces() {
+        const select = document.getElementById('scan-interface');
+        if (!select) return;
+
+        try {
+            const interfaces = await window.api.getInterfaces();
+
+            if (interfaces.length === 0) {
+                select.innerHTML = '<option value="">无可用网络接口</option>';
+                return;
+            }
+
+            select.innerHTML = interfaces.map(iface =>
+                `<option value="${iface.ip}|${iface.netmask}">${iface.name} (${iface.ip})</option>`
+            ).join('');
+
+        } catch (error) {
+            select.innerHTML = '<option value="">加载失败</option>';
+        }
+    },
+
+    // 开始/停止扫描
+    toggleScan() {
+        const select = document.getElementById('scan-interface');
+        if (!select || !select.value) {
+            UIController.showMessage('warning', '请选择网络接口');
+            return;
+        }
+
+        if (!StateManager.status.scanning) {
+            this.startScan();
+        } else {
+            this.stopScan();
+        }
+    },
+
+    // 开始扫描
+    startScan() {
+        const select = document.getElementById('scan-interface');
+        const [ip, netmask] = select.value.split('|');
 
         // 重置数据
-        scanDevices = [];
-        updateScanStats(0, 0, 0);
+        StateManager.resetModule('scan');
 
         // 清空设备列表
-        const deviceList = document.getElementById('device-list');
-        deviceList.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 20px;">扫描中...</td></tr>';
+        UIController.clearTable('device-list');
+        UIController.addTableRow('device-list', {
+            html: '<td colspan="6" style="text-align: center; color: var(--text-muted); padding: 20px;">扫描中...</td>'
+        });
 
         // 显示进度条
-        document.getElementById('scan-progress').style.display = 'block';
+        UIController.toggleElement('scan-progress', true);
 
         // 开始扫描
         window.api.startScan({ ip, netmask });
-        btn.textContent = '停止扫描';
-        btn.style.background = 'linear-gradient(135deg, var(--danger) 0%, #c0392b 100%)';
-        isScanning = true;
-    } else {
-        window.api.stopScan();
-        btn.textContent = '开始扫描';
-        btn.style.background = '';
-        isScanning = false;
-    }
-}
 
-// 处理扫描状态更新
-window.api.onScanStatus((data) => {
-    const { status, message, total, current, found } = data;
-
-    // 更新进度文本
-    document.getElementById('scan-progress-text').textContent = message || '扫描中...';
-
-    // 更新状态文本
-    const statusMap = {
-        calculating: '计算中',
-        scanning: '扫描中',
-        completed: '完成',
-        stopped: '已停止',
-        error: '错误'
-    };
-    document.getElementById('scan-status-text').textContent = statusMap[status] || '就绪';
-
-    // 更新统计
-    if (total !== undefined && current !== undefined) {
-        updateScanStats(total, current, found || 0);
-
-        // 更新进度条
-        const percent = total > 0 ? Math.round((current / total) * 100) : 0;
-        document.getElementById('scan-progress-percent').textContent = percent + '%';
-        document.getElementById('scan-progress-bar').style.width = percent + '%';
-    }
-
-    // 扫描完成或停止
-    if (status === 'completed' || status === 'stopped' || status === 'error') {
-        isScanning = false;
+        // 更新UI
         const btn = document.getElementById('btn-scan');
-        btn.textContent = '开始扫描';
-        btn.style.background = '';
+        if (btn) {
+            btn.textContent = '停止扫描';
+            btn.style.background = 'linear-gradient(135deg, var(--danger) 0%, #c0392b 100%)';
+        }
+
+        StateManager.status.scanning = true;
+    },
+
+    // 停止扫描
+    stopScan() {
+        window.api.stopScan();
+
+        // 更新UI
+        const btn = document.getElementById('btn-scan');
+        if (btn) {
+            btn.textContent = '开始扫描';
+            btn.style.background = '';
+        }
+
+        StateManager.status.scanning = false;
 
         // 3秒后隐藏进度条
         setTimeout(() => {
-            document.getElementById('scan-progress').style.display = 'none';
+            UIController.toggleElement('scan-progress', false);
         }, 3000);
+    },
 
-        // 如果没有发现设备
-        if (scanDevices.length === 0) {
-            const deviceList = document.getElementById('device-list');
-            deviceList.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 40px;">未发现在线设备</td></tr>';
+    // 处理扫描状态更新
+    handleScanStatus(data) {
+        const { status, message, total, current, found } = data;
+
+        // 更新进度文本
+        const progressText = document.getElementById('scan-progress-text');
+        if (progressText) progressText.textContent = message || '扫描中...';
+
+        // 更新状态文本
+        const statusMap = {
+            calculating: '计算中',
+            scanning: '扫描中',
+            completed: '完成',
+            stopped: '已停止',
+            error: '错误'
+        };
+
+        UIController.updateStatCard('scan-status-text', statusMap[status] || '就绪');
+
+        // 更新统计
+        if (total !== undefined && current !== undefined) {
+            StateManager.stats.scan.total = total;
+            StateManager.stats.scan.current = current;
+            StateManager.stats.scan.found = found || 0;
+
+            this.updateScanStats();
+
+            // 更新进度条
+            const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+            const progressPercent = document.getElementById('scan-progress-percent');
+            if (progressPercent) progressPercent.textContent = percent + '%';
+
+            UIController.updateProgress('scan', percent, message || '扫描中...');
+        }
+
+        // 扫描完成或停止
+        if (status === 'completed' || status === 'stopped' || status === 'error') {
+            StateManager.status.scanning = false;
+
+            const btn = document.getElementById('btn-scan');
+            if (btn) {
+                btn.textContent = '开始扫描';
+                btn.style.background = '';
+            }
+
+            // 如果没有发现设备
+            if (StateManager.stats.scan.devices.length === 0) {
+                UIController.clearTable('device-list');
+                UIController.addTableRow('device-list', {
+                    html: '<td colspan="6" style="text-align: center; color: var(--text-muted); padding: 40px;">未发现在线设备</td>'
+                });
+            }
+
+            // 3秒后隐藏进度条
+            setTimeout(() => {
+                UIController.toggleElement('scan-progress', false);
+            }, 3000);
+        }
+
+        // 错误处理
+        if (status === 'error' && data.error) {
+            UIController.showMessage('error', '扫描错误: ' + data.error);
+        }
+    },
+
+    // 处理发现新设备
+    handleDeviceFound(device) {
+        StateManager.stats.scan.devices.push(device);
+        this.addDeviceToTable(device, StateManager.stats.scan.devices.length);
+        this.updateDeviceCount();
+    },
+
+    // 添加设备到表格
+    addDeviceToTable(device, index) {
+        const deviceList = document.getElementById('device-list');
+
+        // 如果是第一个设备，清空提示信息
+        if (index === 1) {
+            UIController.clearTable('device-list');
+        }
+
+        UIController.addTableRow('device-list', {
+            html: `
+                <td class="device-index">${index}</td>
+                <td class="device-ip">${device.ip}</td>
+                <td class="device-mac">${device.mac}</td>
+                <td class="device-vendor">${device.vendor}</td>
+                <td class="device-time">${device.time}</td>
+                <td>
+                    <button class="device-action-btn" onclick="pingDevice('${device.ip}')">Ping</button>
+                </td>
+            `,
+            animation: true
+        });
+    },
+
+    // 更新扫描统计
+    updateScanStats() {
+        const stats = StateManager.stats.scan;
+
+        UIController.updateStatCard('scan-total', stats.total);
+        UIController.updateStatCard('scan-current', stats.current);
+        UIController.updateStatCard('scan-found', stats.found);
+    },
+
+    // 更新设备计数
+    updateDeviceCount() {
+        const count = StateManager.stats.scan.devices.length;
+        const countElement = document.getElementById('device-count');
+        if (countElement) {
+            countElement.textContent = count;
+        }
+    },
+
+    // Ping单个设备
+    pingDevice(ip) {
+        UIController.showTab('ping');
+        const targetInput = document.getElementById('ping-target');
+        if (targetInput) {
+            targetInput.value = ip;
+        }
+    },
+
+    // 导出设备列表
+    exportDeviceList() {
+        if (StateManager.stats.scan.devices.length === 0) {
+            UIController.showMessage('warning', '没有可导出的设备');
+            return;
+        }
+
+        const csv = Utils.generateDeviceCSV(StateManager.stats.scan.devices);
+        const { link, url } = Utils.createDownloadLink(
+            csv,
+            `network_scan_${new Date().getTime()}.csv`
+        );
+
+        link.click();
+        URL.revokeObjectURL(url);
+    }
+};
+
+// ==================== ARP表模块 ====================
+const ArpTableModule = {
+    async refreshArp() {
+        const output = document.getElementById('arp-output');
+        if (!output) return;
+
+        output.textContent = '正在读取 ARP 表...';
+
+        try {
+            const result = await window.api.getArp();
+            output.textContent = result;
+        } catch (error) {
+            output.textContent = '读取失败: ' + error.message;
         }
     }
+};
 
-    // 错误处理
-    if (status === 'error' && data.error) {
-        alert('扫描错误: ' + data.error);
-    }
-});
-
-// 处理发现新设备
-window.api.onScanDeviceFound((device) => {
-    scanDevices.push(device);
-    addDeviceToTable(device, scanDevices.length);
-    updateDeviceCount();
-});
-
-// 添加设备到表格
-function addDeviceToTable(device, index) {
-    const deviceList = document.getElementById('device-list');
-
-    // 如果是第一个设备，清空提示信息
-    if (index === 1) {
-        deviceList.innerHTML = '';
-    }
-
-    const row = document.createElement('tr');
-    row.className = 'new-device';
-    row.innerHTML = `
-        <td class="device-index">${index}</td>
-        <td class="device-ip">${device.ip}</td>
-        <td class="device-mac">${device.mac}</td>
-        <td class="device-vendor">${device.vendor}</td>
-        <td class="device-time">${device.time}</td>
-        <td>
-            <button class="device-action-btn" onclick="pingDevice('${device.ip}')">Ping</button>
-        </td>
-    `;
-
-    deviceList.appendChild(row);
-}
-
-// 更新扫描统计
-function updateScanStats(total, current, found) {
-    document.getElementById('scan-total').textContent = total;
-    document.getElementById('scan-current').textContent = current;
-    document.getElementById('scan-found').textContent = found;
-}
-
-// 更新设备计数
-function updateDeviceCount() {
-    document.getElementById('device-count').textContent = scanDevices.length;
-}
-
-// Ping单个设备
-function pingDevice(ip) {
-    showTab('ping');
-    document.getElementById('ping-target').value = ip;
-    // 不自动开始，让用户点击
-}
-
-// 导出设备列表
-function exportDeviceList() {
-    if (scanDevices.length === 0) {
-        alert('没有可导出的设备!');
-        return;
-    }
-
-    // 生成CSV内容
-    const header = 'IP地址,MAC地址,厂商,响应时间\n';
-    const rows = scanDevices.map(d =>
-        `${d.ip},${d.mac},${d.vendor},${d.time}`
-    ).join('\n');
-
-    const csv = header + rows;
-
-    // 创建下载链接
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `network_scan_${new Date().getTime()}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-}
-
-// ==================== 5. 吞吐量测试 ====================
-
-// 切换UDP配置显示
-function toggleUdpConfig() {
-    const protocol = document.getElementById('tp-client-protocol').value;
-    const configDiv = document.getElementById('udp-config');
-    configDiv.style.display = protocol === 'udp' ? 'block' : 'none';
-}
-
-// 启动服务端
-async function startServer() {
-    if (isServerRunning) return;
-
-    const protocol = document.getElementById('tp-server-protocol').value;
-    const statusEl = document.getElementById('server-status');
-    const indicator = statusEl.querySelector('.status-indicator');
-
-    try {
-        const res = await window.api.startServer({ port: 5201, protocol });
-
-        // 更新状态显示
-        const isSuccess = !res.includes('失败');
-        indicator.className = `status-indicator ${isSuccess ? 'active' : 'inactive'}`;
-        statusEl.innerHTML = `<span class="status-indicator ${isSuccess ? 'active' : 'inactive'}"></span>${res}`;
-
-        isServerRunning = isSuccess;
-
-        // 重置统计数据
-        if (isSuccess) {
-            speedHistory = [];
-            peakSpeed = 0;
-            resetThroughputStats();
+// ==================== 吞吐量测试模块 ====================
+const ThroughputTestModule = {
+    // 切换UDP配置显示
+    toggleUdpConfig() {
+        const protocol = document.getElementById('tp-client-protocol').value;
+        const configDiv = document.getElementById('udp-config');
+        if (configDiv) {
+            configDiv.style.display = protocol === 'udp' ? 'block' : 'none';
         }
-    } catch (error) {
-        indicator.className = 'status-indicator inactive';
-        statusEl.innerHTML = `<span class="status-indicator inactive"></span>启动失败: ${error.message}`;
-    }
-}
+    },
 
-// 启动/停止客户端
-function toggleClient() {
-    const btn = document.getElementById('btn-tp-client');
-    const ip = document.getElementById('tp-ip').value.trim();
-    const protocol = document.getElementById('tp-client-protocol').value;
+    // 启动服务端
+    async startServer() {
+        if (StateManager.status.serverRunning) return;
 
-    if (!ip) {
-        alert('请输入服务端IP地址!');
-        return;
-    }
+        const protocol = document.getElementById('tp-server-protocol').value;
 
-    if (!isClientRunning) {
+        try {
+            const res = await window.api.startServer({ port: 5201, protocol });
+
+            // 更新状态显示
+            const isSuccess = !res.includes('失败');
+            UIController.updateStatusIndicator('server-status', isSuccess, res);
+
+            StateManager.status.serverRunning = isSuccess;
+
+            // 重置统计数据
+            if (isSuccess) {
+                StateManager.resetModule('throughput');
+                this.resetThroughputStats();
+            }
+        } catch (error) {
+            UIController.updateStatusIndicator('server-status', false, '启动失败: ' + error.message);
+        }
+    },
+
+    // 启动/停止客户端
+    toggleClient() {
+        const ip = document.getElementById('tp-ip').value.trim();
+        const protocol = document.getElementById('tp-client-protocol').value;
+
+        if (!ip) {
+            UIController.showMessage('warning', '请输入服务端IP地址');
+            return;
+        }
+
+        if (!StateManager.status.clientRunning) {
+            this.startClient(ip, protocol);
+        } else {
+            this.stopClient();
+        }
+    },
+
+    // 启动客户端
+    startClient(ip, protocol) {
         // 重置数据
-        speedHistory = [];
-        peakSpeed = 0;
-        testStartTime = Date.now();
-        resetThroughputStats();
+        StateManager.resetModule('throughput');
+        StateManager.stats.throughput.startTime = Date.now();
+        this.resetThroughputStats();
 
         // 构建配置
         const config = { ip, port: 5201, protocol };
@@ -423,101 +779,40 @@ function toggleClient() {
         }
 
         window.api.startClient(config);
-        btn.textContent = '停止测试';
-        btn.style.background = 'linear-gradient(135deg, var(--danger) 0%, #c0392b 100%)';
-        isClientRunning = true;
+
+        // 更新UI
+        const btn = document.getElementById('btn-tp-client');
+        if (btn) {
+            btn.textContent = '停止测试';
+            btn.style.background = 'linear-gradient(135deg, var(--danger) 0%, #c0392b 100%)';
+        }
+
+        StateManager.status.clientRunning = true;
 
         // 重置图表
-        speedChart.data.labels = [];
-        speedChart.data.datasets[0].data = [];
-        speedChart.update('none');
+        if (StateManager.charts.speed) {
+            StateManager.charts.speed.data.labels = [];
+            StateManager.charts.speed.data.datasets[0].data = [];
+            StateManager.charts.speed.update('none');
+        }
 
         // 启动计时器
-        updateDuration();
-    } else {
+        this.updateDuration();
+    },
+
+    // 停止客户端
+    stopClient() {
         window.api.stopClient();
-        btn.textContent = '开始测试';
-        btn.style.background = '';
-        isClientRunning = false;
 
-        // 停止计时器
-        if (durationTimer) {
-            clearTimeout(durationTimer);
-            durationTimer = null;
+        // 更新UI
+        const btn = document.getElementById('btn-tp-client');
+        if (btn) {
+            btn.textContent = '开始测试';
+            btn.style.background = '';
         }
-    }
-}
 
-// 更新测试时长
-function updateDuration() {
-    if (!isClientRunning) return;
-
-    const duration = Math.floor((Date.now() - testStartTime) / 1000);
-    document.getElementById('test-duration').textContent = duration + 's';
-
-    durationTimer = setTimeout(updateDuration, 1000);
-}
-
-// 处理吞吐量数据
-window.api.onTpData((rawSpeedMbps) => {
-    const speed = parseFloat(rawSpeedMbps);
-
-    // 存储原始速度数据
-    speedHistory.push(speed);
-    if (speedHistory.length > SMOOTHING_WINDOW) {
-        speedHistory.shift();
-    }
-
-    // 计算滑动平均值(平滑后的速度)
-    const sum = speedHistory.reduce((a, b) => a + b, 0);
-    const smoothedSpeed = sum / speedHistory.length;
-
-    // 更新峰值
-    if (speed > peakSpeed) {
-        peakSpeed = speed;
-    }
-
-    // 计算平均速度(所有历史数据)
-    const totalHistory = speedChart.data.datasets[0].data;
-    const avgSpeed = totalHistory.length > 0
-        ? totalHistory.reduce((a, b) => a + parseFloat(b), 0) / totalHistory.length
-        : 0;
-
-    // 更新统计卡片
-    document.getElementById('current-speed').textContent = speed.toFixed(2) + ' Mbps';
-    document.getElementById('avg-speed').textContent = avgSpeed.toFixed(2) + ' Mbps';
-    document.getElementById('peak-speed').textContent = peakSpeed.toFixed(2) + ' Mbps';
-
-    // 更新图表 - 限制数据点数量
-    const now = new Date().toLocaleTimeString();
-    if (speedChart.data.labels.length >= SPEED_CHART_MAX_POINTS) {
-        speedChart.data.labels.shift();
-        speedChart.data.datasets[0].data.shift();
-    }
-
-    speedChart.data.labels.push(now);
-    speedChart.data.datasets[0].data.push(smoothedSpeed.toFixed(2));
-    speedChart.update('none'); // 禁用动画提升性能
-});
-
-// 处理日志消息
-window.api.onTpLog((msg) => {
-    const logOutput = document.getElementById('tp-log-output');
-    logOutput.textContent = msg;
-
-    // 处理停止消息
-    if (msg.includes('测试已停止') || msg.includes('错误')) {
-        isClientRunning = false;
-        isServerRunning = false;
-
-        const clientBtn = document.getElementById('btn-tp-client');
-        clientBtn.textContent = '开始测试';
-        clientBtn.style.background = '';
-
-        const statusEl = document.getElementById('server-status');
-        const indicator = statusEl.querySelector('.status-indicator');
-        indicator.className = 'status-indicator inactive';
-        statusEl.innerHTML = '<span class="status-indicator inactive"></span>未启动';
+        StateManager.status.clientRunning = false;
+        StateManager.status.serverRunning = false;
 
         // 停止计时器
         if (durationTimer) {
@@ -525,548 +820,735 @@ window.api.onTpLog((msg) => {
             durationTimer = null;
         }
 
-        // 清空历史记录
-        speedHistory = [];
-    }
-});
+        // 更新服务端状态
+        UIController.updateStatusIndicator('server-status', false, '未启动');
+    },
 
-// 重置吞吐量统计
-function resetThroughputStats() {
-    document.getElementById('current-speed').textContent = '0 Mbps';
-    document.getElementById('avg-speed').textContent = '0 Mbps';
-    document.getElementById('peak-speed').textContent = '0 Mbps';
-    document.getElementById('test-duration').textContent = '0s';
-}
+    // 更新测试时长
+    updateDuration() {
+        if (!StateManager.status.clientRunning) return;
 
-// ==================== 6. 文件传输功能 ====================
+        const startTime = StateManager.stats.throughput.startTime;
+        const duration = startTime ? Math.floor((Date.now() - startTime) / 1000) : 0;
 
-// 选择保存路径
-async function selectSavePath() {
-    const path = await window.api.selectSavePath();
-    if (path) {
-        document.getElementById('transfer-save-path').value = path;
-    }
-}
+        UIController.updateStatCard('test-duration', duration + 's');
 
-// 处理文件选择
-function handleFileSelect() {
-    const fileInput = document.getElementById('transfer-file');
-    const file = fileInput.files[0];
+        durationTimer = setTimeout(() => this.updateDuration(), 1000);
+    },
 
-    if (file) {
-        selectedFilePath = file.path;
-        document.getElementById('transfer-file-display').value = file.name;
+    // 处理吞吐量数据
+    handleTpData(rawSpeedMbps) {
+        const speed = parseFloat(rawSpeedMbps);
 
-        // 更新统计信息
-        const sizeInMB = (file.size / (1024 * 1024)).toFixed(2);
-        document.getElementById('current-file').textContent = file.name;
-        document.getElementById('file-size').textContent = sizeInMB + ' MB';
-    }
-}
-
-// 启动接收服务器
-async function startTransferServer() {
-    if (isTransferServerRunning) {
-        window.api.stopTransferServer();
-        return;
-    }
-
-    const savePath = document.getElementById('transfer-save-path').value;
-    if (!savePath) {
-        alert('请先选择保存路径！');
-        return;
-    }
-
-    const statusEl = document.getElementById('transfer-server-status');
-    const indicator = statusEl.querySelector('.status-indicator');
-
-    try {
-        const res = await window.api.startTransferServer({ port: 5202, savePath });
-
-        const isSuccess = !res.includes('失败');
-        indicator.className = `status-indicator ${isSuccess ? 'active' : 'inactive'}`;
-        statusEl.innerHTML = `<span class="status-indicator ${isSuccess ? 'active' : 'inactive'}"></span>${res}`;
-
-        isTransferServerRunning = isSuccess;
-
-        if (isSuccess) {
-            logTransfer('📥 接收服务已启动，等待文件...');
+        // 存储原始速度数据
+        StateManager.stats.throughput.history.push(speed);
+        if (StateManager.stats.throughput.history.length > CONFIG.SMOOTHING_WINDOW) {
+            StateManager.stats.throughput.history.shift();
         }
-    } catch (error) {
-        indicator.className = 'status-indicator inactive';
-        statusEl.innerHTML = `<span class="status-indicator inactive"></span>启动失败: ${error.message}`;
-        logTransfer('❌ 启动失败: ' + error.message);
+
+        // 计算滑动平均值
+        const sum = StateManager.stats.throughput.history.reduce((a, b) => a + b, 0);
+        const smoothedSpeed = sum / StateManager.stats.throughput.history.length;
+
+        // 更新峰值
+        if (speed > StateManager.stats.throughput.peakSpeed) {
+            StateManager.stats.throughput.peakSpeed = speed;
+        }
+
+        // 计算平均速度
+        const chartData = StateManager.charts.speed ? StateManager.charts.speed.data.datasets[0].data : [];
+        const avgSpeed = chartData.length > 0 ?
+            chartData.reduce((a, b) => a + parseFloat(b), 0) / chartData.length : 0;
+
+        // 更新统计卡片
+        UIController.updateStatCard('current-speed', speed.toFixed(2) + ' Mbps');
+        UIController.updateStatCard('avg-speed', avgSpeed.toFixed(2) + ' Mbps');
+        UIController.updateStatCard('peak-speed', StateManager.stats.throughput.peakSpeed.toFixed(2) + ' Mbps');
+
+        // 更新图表
+        this.updateSpeedChart(smoothedSpeed);
+    },
+
+    // 更新速度图表
+    updateSpeedChart(smoothedSpeed) {
+        const chart = StateManager.charts.speed;
+        if (!chart) return;
+
+        // 限制数据点数量
+        if (chart.data.labels.length >= CONFIG.SPEED_CHART_MAX_POINTS) {
+            chart.data.labels.shift();
+            chart.data.datasets[0].data.shift();
+        }
+
+        const now = new Date().toLocaleTimeString();
+        chart.data.labels.push(now);
+        chart.data.datasets[0].data.push(smoothedSpeed.toFixed(2));
+        chart.update('none');
+    },
+
+    // 处理吞吐量日志
+    handleTpLog(msg) {
+        const logOutput = document.getElementById('tp-log-output');
+        if (logOutput) {
+            logOutput.textContent = msg;
+        }
+
+        // 处理停止消息
+        if (msg.includes('测试已停止') || msg.includes('错误')) {
+            this.stopClient();
+        }
+    },
+
+    // 重置吞吐量统计
+    resetThroughputStats() {
+        UIController.updateStatCard('current-speed', '0 Mbps');
+        UIController.updateStatCard('avg-speed', '0 Mbps');
+        UIController.updateStatCard('peak-speed', '0 Mbps');
+        UIController.updateStatCard('test-duration', '0s');
     }
-}
+};
 
-// 发送文件
-// 1. 定义新的选择函数
-async function triggerFileSelect() {
-    const fileInfo = await window.api.selectSendFile();
-    if (fileInfo) {
-        selectedFilePath = fileInfo.path;
-        document.getElementById('transfer-file-display').value = fileInfo.name;
+// ==================== 文件传输模块 ====================
+const FileTransferModule = {
+    // 选择保存路径
+    async selectSavePath() {
+        const path = await window.api.selectSavePath();
+        const pathInput = document.getElementById('transfer-save-path');
+        if (path && pathInput) {
+            pathInput.value = path;
+        }
+    },
 
-        // 更新界面显示
-        const sizeInMB = (fileInfo.size / (1024 * 1024)).toFixed(2);
-        document.getElementById('current-file').textContent = fileInfo.name;
-        document.getElementById('file-size').textContent = sizeInMB + ' MB';
-    }
-}
+    // 选择发送文件
+    async triggerFileSelect() {
+        const fileInfo = await window.api.selectSendFile();
+        if (fileInfo) {
+            StateManager.stats.transfer.selectedFile = fileInfo;
 
-// 2. 确保 sendFile 函数使用的是正确的变量
+            const displayInput = document.getElementById('transfer-file-display');
+            if (displayInput) {
+                displayInput.value = fileInfo.name;
+            }
 
-// ==================== UDT配置相关函数 ====================
+            // 更新界面显示
+            const sizeInMB = (fileInfo.size / (1024 * 1024)).toFixed(2);
+            UIController.updateStatCard('current-file', fileInfo.name);
+            UIController.updateStatCard('file-size', sizeInMB + ' MB');
+        }
+    },
 
-// 切换UDT配置显示
-function toggleUdtConfig() {
-    const protocol = document.getElementById('transfer-protocol').value;
-    const udtConfig = document.getElementById('udt-config');
-    udtConfig.style.display = protocol === 'udt' ? 'block' : 'none';
-}
+    // 切换UDT配置显示
+    toggleUdtConfig() {
+        const protocol = document.getElementById('transfer-protocol').value;
+        const udtConfig = document.getElementById('udt-config');
+        if (udtConfig) {
+            udtConfig.style.display = protocol === 'udt' ? 'block' : 'none';
+        }
+    },
 
-// 获取UDT配置参数
-function getUdtConfig() {
-    return {
-        windowSize: parseInt(document.getElementById('udt-window-size').value) || 32,
-        packetSize: parseInt(document.getElementById('udt-packet-size').value) || 1400,
-        rto: parseInt(document.getElementById('udt-rto').value) || 1000,
-        maxRetransmit: parseInt(document.getElementById('udt-max-retrans').value) || 5,
-        sendInterval: parseInt(document.getElementById('udt-send-interval').value) || 10,
-        bandwidth: parseInt(document.getElementById('udt-bandwidth').value) || 100,
-        fastRetransmit: document.getElementById('udt-fast-retransmit').checked,
-        congestionControl: document.getElementById('udt-congestion-control').checked
-    };
-}
+    // 获取HRUFT配置参数
+    getUdtConfig() {
+        return {
+            // HRUFT参数
+            packetSize: parseInt(document.getElementById('udt-packet-size').value) || 1400,
+            windowSize: parseInt(document.getElementById('udt-window-size').value) || 64,
+            bandwidth: parseInt(document.getElementById('udt-bandwidth').value) || 0,
+            bufferSize: parseInt(document.getElementById('udt-buffer').value) || 16,
 
-// 更新UDT配置说明
-function updateUdtConfigInfo() {
-    const config = getUdtConfig();
-    logTransfer(`UDT配置: 窗口=${config.windowSize} | 包大小=${config.packetSize}字节 | RTO=${config.rto}ms | 最大重传=${config.maxRetransmit}`);
-}
-function sendFile() {
-    const ip = document.getElementById('transfer-target-ip').value.trim();
-    if (!ip) {
-        alert('请输入目标IP地址！');
-        return;
-    }
+            // 向后兼容的默认参数
+            rto: 1000,
+            maxRetransmit: 5,
+            sendInterval: 10,
+            fastRetransmit: true,
+            congestionControl: true
+        };
+    },
 
-    if (!selectedFilePath) {
-        alert('请先选择要发送的文件！');
-        return;
-    }
+    // 更新UDT配置说明
+    updateUdtConfigInfo() {
+        const config = this.getUdtConfig();
+        const windowBytes = config.windowSize * config.packetSize;
+        const windowMB = (windowBytes / (1024 * 1024)).toFixed(2);
 
-    const protocol = document.getElementById('transfer-protocol').value;
-    const config = {
-        ip: ip,
-        port: 5202,
-        filePath: selectedFilePath,
-        protocol: protocol
-    };
+        this.logTransfer(`HRUFT配置: MSS=${config.packetSize}字节 | 窗口=${config.windowSize}包 (${windowMB}MB)`);
+        if (config.bandwidth > 0) {
+            this.logTransfer(`目标带宽: ${config.bandwidth} Mbps`);
+        }
+    },
 
-    // 如果是UDT协议，添加配置参数
-    if (protocol === 'udt') {
-        config.udtConfig = getUdtConfig();
-        updateUdtConfigInfo();
-    }
+    // 发送文件
+    async sendFile() {
+        const ip = document.getElementById('transfer-target-ip').value.trim();
+        if (!ip) {
+            UIController.showMessage('warning', '请输入目标IP地址');
+            return;
+        }
 
-    window.api.sendFile(config);
+        if (!StateManager.stats.transfer.selectedFile) {
+            UIController.showMessage('warning', '请先选择要发送的文件');
+            return;
+        }
 
-    document.getElementById('transfer-progress').style.display = 'block';
-    document.getElementById('transfer-progress-text').textContent = '正在发送...';
-}
+        const protocol = document.getElementById('transfer-protocol').value;
+        const config = {
+            ip: ip,
+            port: CONFIG.DEFAULT_HRUFT_PORT,
+            filePath: StateManager.stats.transfer.selectedFile.path,
+            protocol: protocol
+        };
 
-// 在初始化函数中添加
+        // 如果是UDT协议，添加HRUFT配置参数
+        if (protocol === 'udt') {
+            config.udtConfig = this.getUdtConfig();
+            this.updateUdtConfigInfo();
+        }
 
+        window.api.sendFile(config);
 
-// 日志输出
-function logTransfer(msg) {
-    const logOutput = document.getElementById('transfer-log-output');
-    const timestamp = new Date().toLocaleTimeString();
-    logOutput.textContent += `[${timestamp}] ${msg}\n`;
-    logOutput.scrollTop = logOutput.scrollHeight;
-}
+        // 显示进度条
+        UIController.toggleElement('transfer-progress', true);
+        UIController.updateProgress('transfer', 0, '正在准备...');
+    },
 
-// 格式化文件大小
-function formatFileSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-}
+    // 启动接收服务器
+    async startTransferServer() {
+        if (StateManager.status.transferServerRunning) {
+            window.api.stopTransferServer();
+            return;
+        }
 
-// 格式化剩余时间
-function formatETA(seconds) {
-    if (!isFinite(seconds) || seconds <= 0) return '--:--';
+        const savePath = document.getElementById('transfer-save-path').value;
+        if (!savePath) {
+            UIController.showMessage('warning', '请先选择保存路径');
+            return;
+        }
 
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-}
+        try {
+            const res = await window.api.startTransferServer({
+                port: CONFIG.DEFAULT_HRUFT_PORT,
+                savePath
+            });
 
-// 添加传输历史记录
-function addTransferHistory(record) {
-    transferHistory.unshift(record);
-    updateTransferHistoryTable();
-}
+            const isSuccess = !res.includes('失败');
+            UIController.updateStatusIndicator('transfer-server-status', isSuccess, res);
+            StateManager.status.transferServerRunning = isSuccess;
 
-// 更新传输历史表格
-function updateTransferHistoryTable() {
-    const tbody = document.getElementById('transfer-history');
-    document.getElementById('transfer-history-count').textContent = transferHistory.length;
+            if (isSuccess) {
+                this.logTransfer('📥 接收服务已启动，等待文件...');
+            }
+        } catch (error) {
+            UIController.updateStatusIndicator('transfer-server-status', false, '启动失败: ' + error.message);
+            this.logTransfer('❌ 启动失败: ' + error.message);
+        }
+    },
 
-    if (transferHistory.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 40px;">暂无传输记录</td></tr>';
-        return;
-    }
+    // 日志输出
+    logTransfer(msg) {
+        const logOutput = document.getElementById('transfer-log-output');
+        if (!logOutput) return;
 
-    tbody.innerHTML = transferHistory.map((record, index) => `
-        <tr>
-            <td>${index + 1}</td>
-            <td>${record.type === 'send' ? '📤 发送' : '📥 接收'}</td>
-            <td style="word-break: break-all;">${record.fileName}</td>
-            <td>${formatFileSize(record.fileSize)}</td>
-            <td style="font-family: 'Consolas', monospace;">${record.remoteIP}</td>
-            <td><span style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-size: 12px;">${record.protocol || 'TCP'}</span></td>
-            <td>${record.duration}s</td>
-            <td>
-                <span style="color: ${record.success ? 'var(--success)' : 'var(--danger)'};">
-                    ${record.success ? '✅ 成功' : '❌ 失败'}
-                </span>
-            </td>
-            <td style="font-size: 12px;">${record.time}</td>
-        </tr>
-    `).join('');
-}
+        const timestamp = new Date().toLocaleTimeString();
+        logOutput.textContent += `[${timestamp}] ${msg}\n`;
+        logOutput.scrollTop = logOutput.scrollHeight;
 
-// 清空传输历史
-function clearTransferHistory() {
-    if (transferHistory.length === 0) return;
+        // 检测HRUFT特有的日志格式
+        if (msg.includes('HRUFT') || msg.includes('Mbps') || msg.includes('丢包率')) {
+            logOutput.textContent += `[${timestamp}] ⚡ ${msg}\n`;
+        }
+    },
 
-    if (confirm('确定要清空所有传输历史吗？')) {
-        transferHistory = [];
-        updateTransferHistoryTable();
-        logTransfer('🗑️ 已清空传输历史');
-    }
-}
+    // 添加传输历史记录
+    addTransferHistory(record) {
+        StateManager.stats.transfer.history.unshift(record);
+        this.updateTransferHistoryTable();
+    },
 
-// ==================== 文件传输事件监听 ====================
+    // 更新传输历史表格
+    updateTransferHistoryTable() {
+        const tbody = document.getElementById('transfer-history');
+        const countElement = document.getElementById('transfer-history-count');
 
-// 监听日志消息
-window.api.onTransferLog((msg) => {
-    logTransfer(msg);
-});
+        if (countElement) {
+            countElement.textContent = StateManager.stats.transfer.history.length;
+        }
 
-// 接收端 - 文件开始接收
-window.api.onFileTransferStart((data) => {
-    currentTransfer = {
-        type: 'receive',
-        fileName: data.fileName,
-        fileSize: data.fileSize,
-        sourceMD5: data.sourceMD5,
-        startTime: Date.now()
-    };
+        if (StateManager.stats.transfer.history.length === 0) {
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 40px;">暂无传输记录</td></tr>';
+            }
+            return;
+        }
 
-    document.getElementById('transfer-progress').style.display = 'block';
-    document.getElementById('current-file').textContent = data.fileName;
-    document.getElementById('file-size').textContent = formatFileSize(data.fileSize);
-    document.getElementById('source-md5').textContent = data.sourceMD5;
-    document.getElementById('received-md5').textContent = '计算中...';
-    document.getElementById('md5-result').style.display = 'none';
-});
+        if (!tbody) return;
 
-// 接收端 - 进度更新
-window.api.onFileTransferProgress((data) => {
-    const { received, total, progress, speed } = data;
+        tbody.innerHTML = StateManager.stats.transfer.history.map((record, index) => `
+            <tr>
+                <td>${index + 1}</td>
+                <td>${record.type === 'send' ? '📤 发送' : '📥 接收'}</td>
+                <td style="word-break: break-all;">${record.fileName}</td>
+                <td>${Utils.formatFileSize(record.fileSize)}</td>
+                <td style="font-family: 'Consolas', monospace;">${record.remoteIP}</td>
+                <td><span style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-size: 12px;">${record.protocol || 'TCP'}</span></td>
+                <td>${record.duration}s</td>
+                <td>
+                    <span style="color: ${record.success ? 'var(--success)' : 'var(--danger)'};">
+                        ${record.success ? '✅ 成功' : '❌ 失败'}
+                    </span>
+                </td>
+                <td style="font-size: 12px;">${record.time}</td>
+            </tr>
+        `).join('');
+    },
 
-    document.getElementById('transfer-progress-text').textContent = '正在接收...';
-    document.getElementById('transfer-progress-percent').textContent = progress + '%';
-    document.getElementById('transfer-progress-bar').style.width = progress + '%';
-    document.getElementById('transfer-speed').textContent = speed + ' MB/s';
-    document.getElementById('transfer-bytes').textContent = formatFileSize(received);
-    document.getElementById('transfer-total').textContent = formatFileSize(total);
+    // 清空传输历史
+    clearTransferHistory() {
+        if (StateManager.stats.transfer.history.length === 0) return;
 
-    // 计算预计剩余时间
-    const speedBytes = parseFloat(speed) * 1024 * 1024;
-    const remainingBytes = total - received;
-    const eta = speedBytes > 0 ? remainingBytes / speedBytes : 0;
-    document.getElementById('transfer-eta').textContent = formatETA(eta);
-});
+        if (confirm('确定要清空所有传输历史吗？')) {
+            StateManager.stats.transfer.history = [];
+            this.updateTransferHistoryTable();
+            this.logTransfer('🗑️ 已清空传输历史');
+        }
+    },
 
-// 接收端 - 接收完成
-window.api.onFileTransferComplete((data) => {
-    const { fileName, fileSize, sourceMD5, receivedMD5, match, duration, protocol } = data;
+    // 处理文件传输日志
+    handleTransferLog(msg) {
+        this.logTransfer(msg);
+    },
 
-    // 更新进度为100%
-    document.getElementById('transfer-progress-percent').textContent = '100%';
-    document.getElementById('transfer-progress-bar').style.width = '100%';
-    document.getElementById('transfer-progress-text').textContent = match ? '✅ 接收完成' : '⚠️ MD5校验失败';
+    // 接收端 - 文件开始接收
+    handleFileTransferStart(data) {
+        StateManager.stats.transfer.current = {
+            type: 'receive',
+            fileName: data.fileName,
+            fileSize: data.fileSize,
+            sourceMD5: data.sourceMD5,
+            startTime: Date.now()
+        };
 
-    // 显示MD5值
-    document.getElementById('received-md5').textContent = receivedMD5;
+        UIController.toggleElement('transfer-progress', true);
+        UIController.updateStatCard('current-file', data.fileName);
+        UIController.updateStatCard('file-size', Utils.formatFileSize(data.fileSize));
+        UIController.updateStatCard('source-md5', data.sourceMD5);
+        UIController.updateStatCard('received-md5', '计算中...');
+        UIController.toggleElement('md5-result', false);
+    },
 
-    // 显示MD5校验结果
-    const resultDiv = document.getElementById('md5-result');
-    resultDiv.style.display = 'block';
+    // 接收端 - 进度更新
+    handleFileTransferProgress(data) {
+        const { received, total, progress, speed } = data;
 
-    if (match) {
-        resultDiv.style.background = 'linear-gradient(135deg, rgba(0, 242, 195, 0.2) 0%, rgba(0, 234, 255, 0.1) 100%)';
-        resultDiv.style.color = 'var(--success)';
-        resultDiv.style.border = '2px solid var(--success)';
-        resultDiv.textContent = '✅ MD5校验通过 - 文件完整';
-    } else {
-        resultDiv.style.background = 'linear-gradient(135deg, rgba(255, 68, 68, 0.2) 0%, rgba(255, 107, 138, 0.1) 100%)';
-        resultDiv.style.color = 'var(--danger)';
-        resultDiv.style.border = '2px solid var(--danger)';
-        resultDiv.textContent = '❌ MD5校验失败 - 文件可能损坏';
-    }
+        UIController.updateProgress('transfer', progress, '正在接收...');
 
-    // 添加到历史记录
-    addTransferHistory({
-        type: 'receive',
-        fileName: fileName,
-        fileSize: fileSize,
-        remoteIP: document.getElementById('transfer-target-ip').value || 'Unknown',
-        duration: duration,
-        success: match,
-        time: new Date().toLocaleString(),
-        protocol: protocol
-    });
+        // 更新传输信息
+        const speedElement = document.getElementById('transfer-speed');
+        const bytesElement = document.getElementById('transfer-bytes');
+        const totalElement = document.getElementById('transfer-total');
+        const etaElement = document.getElementById('transfer-eta');
 
-    // 3秒后隐藏进度条
-    setTimeout(() => {
-        document.getElementById('transfer-progress').style.display = 'none';
-    }, 3000);
-});
+        if (speedElement) speedElement.textContent = speed + ' MB/s';
+        if (bytesElement) bytesElement.textContent = Utils.formatFileSize(received);
+        if (totalElement) totalElement.textContent = Utils.formatFileSize(total);
 
-// 接收端 - 错误
-window.api.onFileTransferError((data) => {
-    document.getElementById('transfer-progress-text').textContent = '❌ 接收失败';
-    document.getElementById('transfer-progress-bar').style.background = 'var(--danger)';
+        // 计算预计剩余时间
+        const speedBytes = parseFloat(speed) * 1024 * 1024;
+        const remainingBytes = total - received;
+        const eta = speedBytes > 0 ? remainingBytes / speedBytes : 0;
+        if (etaElement) etaElement.textContent = Utils.formatETA(eta);
+    },
 
-    setTimeout(() => {
-        document.getElementById('transfer-progress').style.display = 'none';
-        document.getElementById('transfer-progress-bar').style.background = '';
-    }, 3000);
-});
+    // 接收端 - 接收完成
+    handleFileTransferComplete(data) {
+        const { fileName, fileSize, sourceMD5, receivedMD5, match, duration, protocol } = data;
 
-// 发送端 - 开始发送
-window.api.onFileSendStart((data) => {
-    currentTransfer = {
-        type: 'send',
-        fileName: data.fileName,
-        fileSize: data.fileSize,
-        md5: data.md5,
-        startTime: Date.now()
-    };
+        // 更新进度为100%
+        UIController.updateProgress('transfer', 100, match ? '✅ 接收完成' : '⚠️ MD5校验失败');
 
-    document.getElementById('current-file').textContent = data.fileName;
-    document.getElementById('file-size').textContent = formatFileSize(data.fileSize);
-    document.getElementById('source-md5').textContent = data.md5;
-    document.getElementById('received-md5').textContent = '--';
-    document.getElementById('md5-result').style.display = 'none';
-});
+        // 显示MD5值
+        UIController.updateStatCard('received-md5', receivedMD5);
 
-// 发送端 - 进度更新
-window.api.onFileSendProgress((data) => {
-    const { sent, total, progress, speed } = data;
+        // 显示MD5校验结果
+        const resultDiv = document.getElementById('md5-result');
+        if (resultDiv) {
+            resultDiv.style.display = 'block';
 
-    document.getElementById('transfer-progress-text').textContent = '正在发送...';
-    document.getElementById('transfer-progress-percent').textContent = progress + '%';
-    document.getElementById('transfer-progress-bar').style.width = progress + '%';
-    document.getElementById('transfer-speed').textContent = speed + ' MB/s';
-    document.getElementById('transfer-bytes').textContent = formatFileSize(sent);
-    document.getElementById('transfer-total').textContent = formatFileSize(total);
-
-    // 计算预计剩余时间
-    const speedBytes = parseFloat(speed) * 1024 * 1024;
-    const remainingBytes = total - sent;
-    const eta = speedBytes > 0 ? remainingBytes / speedBytes : 0;
-    document.getElementById('transfer-eta').textContent = formatETA(eta);
-});
-
-// 发送端 - 发送完成
-window.api.onFileSendComplete((data) => {
-    const { fileName, fileSize, md5, duration, protocol } = data;
-
-    document.getElementById('transfer-progress-percent').textContent = '100%';
-    document.getElementById('transfer-progress-bar').style.width = '100%';
-    document.getElementById('transfer-progress-text').textContent = '✅ 发送完成';
-
-    // 显示成功消息
-    const resultDiv = document.getElementById('md5-result');
-    resultDiv.style.display = 'block';
-    resultDiv.style.background = 'linear-gradient(135deg, rgba(0, 242, 195, 0.2) 0%, rgba(0, 234, 255, 0.1) 100%)';
-    resultDiv.style.color = 'var(--success)';
-    resultDiv.style.border = '2px solid var(--success)';
-    resultDiv.textContent = '✅ 文件发送成功 - 等待接收端校验';
-
-    // 添加到历史记录
-    addTransferHistory({
-        type: 'send',
-        fileName: fileName,
-        fileSize: fileSize,
-        remoteIP: document.getElementById('transfer-target-ip').value,
-        duration: duration,
-        success: true,
-        time: new Date().toLocaleString(),
-        protocol: protocol
-    });
-
-    // 3秒后隐藏进度条
-    setTimeout(() => {
-        document.getElementById('transfer-progress').style.display = 'none';
-    }, 3000);
-});
-
-// 发送端 - 错误
-window.api.onFileSendError((data) => {
-    document.getElementById('transfer-progress-text').textContent = '❌ 发送失败';
-    document.getElementById('transfer-progress-bar').style.background = 'var(--danger)';
-
-    // 显示错误消息
-    const resultDiv = document.getElementById('md5-result');
-    resultDiv.style.display = 'block';
-    resultDiv.style.background = 'linear-gradient(135deg, rgba(255, 68, 68, 0.2) 0%, rgba(255, 107, 138, 0.1) 100%)';
-    resultDiv.style.color = 'var(--danger)';
-    resultDiv.style.border = '2px solid var(--danger)';
-    resultDiv.textContent = '❌ 文件发送失败: ' + data.error;
-
-    setTimeout(() => {
-        document.getElementById('transfer-progress').style.display = 'none';
-        document.getElementById('transfer-progress-bar').style.background = '';
-    }, 3000);
-});
-
-// ==================== 图表初始化 ====================
-function initCharts() {
-    // Ping延迟图表
-    const pingCtx = document.getElementById('pingChart').getContext('2d');
-    pingChart = new Chart(pingCtx, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [{
-                label: '延迟 (ms)',
-                data: [],
-                borderColor: '#00f2c3',
-                backgroundColor: 'rgba(0, 242, 195, 0.1)',
-                tension: 0.4,
-                fill: true,
-                pointRadius: 3,
-                pointHoverRadius: 5,
-                borderWidth: 2
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false, // 禁用动画提升性能
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    grid: { color: '#2a2a3e' },
-                    ticks: { color: '#a0a0b0' }
-                },
-                x: {
-                    display: false
-                }
-            },
-            plugins: {
-                legend: {
-                    labels: {
-                        color: '#e9ecef',
-                        font: { size: 14, weight: '600' }
-                    }
-                },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false
-                }
-            },
-            interaction: {
-                mode: 'nearest',
-                axis: 'x',
-                intersect: false
+            if (match) {
+                resultDiv.style.background = 'linear-gradient(135deg, rgba(0, 242, 195, 0.2) 0%, rgba(0, 234, 255, 0.1) 100%)';
+                resultDiv.style.color = 'var(--success)';
+                resultDiv.style.border = '2px solid var(--success)';
+                resultDiv.textContent = '✅ MD5校验通过 - 文件完整';
+            } else {
+                resultDiv.style.background = 'linear-gradient(135deg, rgba(255, 68, 68, 0.2) 0%, rgba(255, 107, 138, 0.1) 100%)';
+                resultDiv.style.color = 'var(--danger)';
+                resultDiv.style.border = '2px solid var(--danger)';
+                resultDiv.textContent = '❌ MD5校验失败 - 文件可能损坏';
             }
         }
-    });
 
-    // 速度图表
-    const speedCtx = document.getElementById('speedChart').getContext('2d');
-    speedChart = new Chart(speedCtx, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [{
-                label: `带宽 (Mbps) - ${SMOOTHING_WINDOW}秒平均`,
-                data: [],
-                borderColor: '#e14eca',
-                backgroundColor: 'rgba(225, 78, 202, 0.1)',
-                tension: 0.4,
-                fill: true,
-                pointRadius: 3,
-                pointHoverRadius: 5,
-                borderWidth: 2
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false, // 禁用动画提升性能
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    grid: { color: '#2a2a3e' },
-                    ticks: { color: '#a0a0b0' }
-                },
-                x: {
-                    display: false
-                }
-            },
-            plugins: {
-                legend: {
-                    labels: {
-                        color: '#e9ecef',
-                        font: { size: 14, weight: '600' }
-                    }
-                },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false
-                }
-            },
-            interaction: {
-                mode: 'nearest',
-                axis: 'x',
-                intersect: false
-            }
+        // 添加到历史记录
+        this.addTransferHistory({
+            type: 'receive',
+            fileName: fileName,
+            fileSize: fileSize,
+            remoteIP: document.getElementById('transfer-target-ip')?.value || 'Unknown',
+            duration: duration,
+            success: match,
+            time: new Date().toLocaleString(),
+            protocol: protocol
+        });
+
+        // 3秒后隐藏进度条
+        setTimeout(() => {
+            UIController.toggleElement('transfer-progress', false);
+        }, 3000);
+    },
+
+    // 发送端 - 开始发送
+    handleFileSendStart(data) {
+        StateManager.stats.transfer.current = {
+            type: 'send',
+            fileName: data.fileName,
+            fileSize: data.fileSize,
+            md5: data.md5,
+            startTime: Date.now()
+        };
+
+        UIController.updateStatCard('current-file', data.fileName);
+        UIController.updateStatCard('file-size', Utils.formatFileSize(data.fileSize));
+        UIController.updateStatCard('source-md5', data.md5);
+        UIController.updateStatCard('received-md5', '--');
+        UIController.toggleElement('md5-result', false);
+    },
+
+    // 发送端 - 进度更新
+    handleFileSendProgress(data) {
+        const { sent, total, progress, speed } = data;
+
+        UIController.updateProgress('transfer', progress, '正在发送...');
+
+        // 更新传输信息
+        const speedElement = document.getElementById('transfer-speed');
+        const bytesElement = document.getElementById('transfer-bytes');
+        const totalElement = document.getElementById('transfer-total');
+        const etaElement = document.getElementById('transfer-eta');
+
+        if (speedElement) speedElement.textContent = speed + ' MB/s';
+        if (bytesElement) bytesElement.textContent = Utils.formatFileSize(sent);
+        if (totalElement) totalElement.textContent = Utils.formatFileSize(total);
+
+        // 计算预计剩余时间
+        const speedBytes = parseFloat(speed) * 1024 * 1024;
+        const remainingBytes = total - sent;
+        const eta = speedBytes > 0 ? remainingBytes / speedBytes : 0;
+        if (etaElement) etaElement.textContent = Utils.formatETA(eta);
+    },
+
+    // 发送端 - 发送完成
+    handleFileSendComplete(data) {
+        const { fileName, fileSize, md5, duration, protocol } = data;
+
+        UIController.updateProgress('transfer', 100, '✅ 发送完成');
+
+        // 显示成功消息
+        const resultDiv = document.getElementById('md5-result');
+        if (resultDiv) {
+            resultDiv.style.display = 'block';
+            resultDiv.style.background = 'linear-gradient(135deg, rgba(0, 242, 195, 0.2) 0%, rgba(0, 234, 255, 0.1) 100%)';
+            resultDiv.style.color = 'var(--success)';
+            resultDiv.style.border = '2px solid var(--success)';
+            resultDiv.textContent = '✅ 文件发送成功 - 等待接收端校验';
         }
-    });
+
+        // 显示HRUFT统计信息
+        if (data.stats && protocol === 'UDT') {
+            this.logTransfer(`📊 HRUFT传输统计:`);
+            this.logTransfer(`  - 平均速度: ${data.stats.average_speed_mbps || 0} Mbps`);
+            this.logTransfer(`  - 最高速度: ${data.stats.max_speed_mbps || 0} Mbps`);
+            this.logTransfer(`  - 丢包率: ${data.stats.packet_loss_rate || 0}%`);
+            this.logTransfer(`  - 网络质量: ${data.stats.network_quality || 'N/A'}`);
+            this.logTransfer(`  - 传输效率: ${data.stats.transfer_efficiency || 0}%`);
+        }
+
+        // 添加到历史记录
+        this.addTransferHistory({
+            type: 'send',
+            fileName: fileName,
+            fileSize: fileSize,
+            remoteIP: document.getElementById('transfer-target-ip')?.value,
+            duration: duration,
+            success: true,
+            time: new Date().toLocaleString(),
+            protocol: protocol
+        });
+
+        // 3秒后隐藏进度条
+        setTimeout(() => {
+            UIController.toggleElement('transfer-progress', false);
+        }, 3000);
+    },
+
+    // 发送端 - 错误
+    handleFileSendError(data) {
+        UIController.updateProgress('transfer', 0, '❌ 发送失败');
+
+        const progressBar = document.getElementById('transfer-progress-bar');
+        if (progressBar) {
+            progressBar.style.background = 'var(--danger)';
+        }
+
+        // 显示错误消息
+        const resultDiv = document.getElementById('md5-result');
+        if (resultDiv) {
+            resultDiv.style.display = 'block';
+            resultDiv.style.background = 'linear-gradient(135deg, rgba(255, 68, 68, 0.2) 0%, rgba(255, 107, 138, 0.1) 100%)';
+            resultDiv.style.color = 'var(--danger)';
+            resultDiv.style.border = '2px solid var(--danger)';
+            resultDiv.textContent = '❌ 文件发送失败: ' + (data.error || '未知错误');
+        }
+
+        setTimeout(() => {
+            UIController.toggleElement('transfer-progress', false);
+            if (progressBar) {
+                progressBar.style.background = '';
+            }
+        }, 3000);
+    }
+};
+
+// ==================== 图表初始化模块 ====================
+const ChartModule = {
+    // 初始化所有图表
+    initCharts() {
+        this.initPingChart();
+        this.initSpeedChart();
+    },
+
+    // 初始化Ping图表
+    initPingChart() {
+        const pingCtx = document.getElementById('pingChart');
+        if (!pingCtx) return;
+
+        StateManager.charts.ping = new Chart(pingCtx.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: '延迟 (ms)',
+                    data: [],
+                    borderColor: '#00f2c3',
+                    backgroundColor: 'rgba(0, 242, 195, 0.1)',
+                    tension: 0.4,
+                    fill: true,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: '#2a2a3e' },
+                        ticks: { color: '#a0a0b0' }
+                    },
+                    x: { display: false }
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: '#e9ecef',
+                            font: { size: 14, weight: '600' }
+                        }
+                    },
+                    tooltip: { mode: 'index', intersect: false }
+                },
+                interaction: { mode: 'nearest', axis: 'x', intersect: false }
+            }
+        });
+    },
+
+    // 初始化速度图表
+    initSpeedChart() {
+        const speedCtx = document.getElementById('speedChart');
+        if (!speedCtx) return;
+
+        StateManager.charts.speed = new Chart(speedCtx.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: `带宽 (Mbps) - ${CONFIG.SMOOTHING_WINDOW}秒平均`,
+                    data: [],
+                    borderColor: '#e14eca',
+                    backgroundColor: 'rgba(225, 78, 202, 0.1)',
+                    tension: 0.4,
+                    fill: true,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: '#2a2a3e' },
+                        ticks: { color: '#a0a0b0' }
+                    },
+                    x: { display: false }
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: '#e9ecef',
+                            font: { size: 14, weight: '600' }
+                        }
+                    },
+                    tooltip: { mode: 'index', intersect: false }
+                },
+                interaction: { mode: 'nearest', axis: 'x', intersect: false }
+            }
+        });
+    }
+};
+
+// ==================== IPC事件监听模块 ====================
+const IPCEventHandler = {
+    // 初始化所有事件监听
+    init() {
+        this.setupPingEvents();
+        this.setupScanEvents();
+        this.setupThroughputEvents();
+        this.setupTransferEvents();
+    },
+
+    // Ping测试事件
+    setupPingEvents() {
+        window.api.onPingReply((text) => {
+            PingTestModule.handlePingReply(text);
+        });
+    },
+
+    // 网段扫描事件
+    setupScanEvents() {
+        window.api.onScanStatus((data) => {
+            NetworkScanModule.handleScanStatus(data);
+        });
+
+        window.api.onScanDeviceFound((device) => {
+            NetworkScanModule.handleDeviceFound(device);
+        });
+    },
+
+    // 吞吐量测试事件
+    setupThroughputEvents() {
+        window.api.onTpData((speed) => {
+            ThroughputTestModule.handleTpData(speed);
+        });
+
+        window.api.onTpLog((msg) => {
+            ThroughputTestModule.handleTpLog(msg);
+        });
+    },
+
+    // 文件传输事件
+    setupTransferEvents() {
+        window.api.onTransferLog((msg) => {
+            FileTransferModule.handleTransferLog(msg);
+        });
+
+        window.api.onFileTransferStart((data) => {
+            FileTransferModule.handleFileTransferStart(data);
+        });
+
+        window.api.onFileTransferProgress((data) => {
+            FileTransferModule.handleFileTransferProgress(data);
+        });
+
+        window.api.onFileTransferComplete((data) => {
+            FileTransferModule.handleFileTransferComplete(data);
+        });
+
+        window.api.onFileSendStart((data) => {
+            FileTransferModule.handleFileSendStart(data);
+        });
+
+        window.api.onFileSendProgress((data) => {
+            FileTransferModule.handleFileSendProgress(data);
+        });
+
+        window.api.onFileSendComplete((data) => {
+            FileTransferModule.handleFileSendComplete(data);
+        });
+
+        window.api.onFileSendError((data) => {
+            FileTransferModule.handleFileSendError(data);
+        });
+    }
+};
+
+// ==================== 全局函数导出 ====================
+// 导出到全局作用域的函数
+window.showTab = (id) => UIController.showTab(id);
+window.togglePing = () => PingTestModule.togglePing();
+window.refreshArp = () => ArpTableModule.refreshArp();
+window.toggleScan = () => NetworkScanModule.toggleScan();
+window.exportDeviceList = () => NetworkScanModule.exportDeviceList();
+window.pingDevice = (ip) => NetworkScanModule.pingDevice(ip);
+window.startServer = () => ThroughputTestModule.startServer();
+window.toggleClient = () => ThroughputTestModule.toggleClient();
+window.toggleUdpConfig = () => ThroughputTestModule.toggleUdpConfig();
+window.selectSavePath = () => FileTransferModule.selectSavePath();
+window.startTransferServer = () => FileTransferModule.startTransferServer();
+window.triggerFileSelect = () => FileTransferModule.triggerFileSelect();
+window.sendFile = () => FileTransferModule.sendFile();
+window.toggleUdtConfig = () => FileTransferModule.toggleUdtConfig();
+window.updateUdtConfigInfo = () => FileTransferModule.updateUdtConfigInfo();
+window.clearTransferHistory = () => FileTransferModule.clearTransferHistory();
+
+// ==================== 主初始化函数 ====================
+function initializeApp() {
+    // 添加CSS动画
+    UIController.addAnimations();
+
+    // 初始化图表
+    ChartModule.initCharts();
+
+    // 设置IPC事件监听
+    IPCEventHandler.init();
+
+    // 加载初始数据
+    NetworkInfoModule.loadInterfaces();
+    NetworkScanModule.loadScanInterfaces();
+    FileTransferModule.toggleUdtConfig();
+
+    // 设置HRUFT默认配置
+    document.getElementById('udt-packet-size').value = 1400;
+    document.getElementById('udt-window-size').value = 64;
+    document.getElementById('udt-bandwidth').value = 0;
+    document.getElementById('udt-buffer').value = 16;
+
+    UIController.showMessage('success', 'NetTestTool Pro 已就绪', 2000);
 }
 
-// ==================== 初始化 ====================
-document.addEventListener('DOMContentLoaded', () => {
-    loadInterfaces();
-    loadScanInterfaces();
-    initCharts();
-    toggleUdtConfig(); // 添加这一行
-
-    // 监听UDT配置变化
-    document.getElementById('udt-window-size').addEventListener('change', updateUdtConfigInfo);
-    document.getElementById('udt-packet-size').addEventListener('change', updateUdtConfigInfo);
-    document.getElementById('udt-rto').addEventListener('change', updateUdtConfigInfo);
-});
+// DOM加载完成后初始化
+document.addEventListener('DOMContentLoaded', initializeApp);
 
 // 页面卸载时清理资源
 window.addEventListener('beforeunload', () => {
-    if (isPinging) {
+    if (StateManager.status.pinging) {
         window.api.stopPing();
     }
-    if (isScanning) {
+    if (StateManager.status.scanning) {
         window.api.stopScan();
     }
-    if (isClientRunning) {
+    if (StateManager.status.clientRunning) {
         window.api.stopClient();
     }
     if (durationTimer) {
