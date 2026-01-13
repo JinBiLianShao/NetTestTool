@@ -1,1128 +1,911 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const {app, BrowserWindow, ipcMain, dialog} = require('electron');
 const path = require('path');
-const { exec, spawn } = require('child_process');
+const {spawn, exec} = require('child_process');
 const os = require('os');
 const net = require('net');
 const dgram = require('dgram');
-const iconv = require('iconv-lite');
 const fs = require('fs');
 const crypto = require('crypto');
+const iconv = require('iconv-lite'); // 需要确保 package.json 中有此依赖
 
-// ==================== 全局变量和状态管理 ====================
+// ============================================================================
+//                               全局配置 & 状态
+// ============================================================================
+
 let mainWindow = null;
+const isWin = process.platform === 'win32';
 
-// Ping测试模块状态
-let pingTimer = null;
-let isPinging = false;
-
-// 网段扫描模块状态
-let scanInProgress = false;
-
-// 吞吐量测试模块状态
-let throughputServer = null;
-let throughputSocket = null;
-let udpServer = null;
-let udpClient = null;
-let udpClientTimer = null;
-let totalBytesReceived = 0;
-let lastCheckTime = Date.now();
-let speedTimer = null;
-let testing = false;
-let isServerRunning = false;
-
-// 文件传输模块状态
-let fileTransferServer = null;
-let hruftReceiverProcess = null;
-let hruftSenderProcess = null;
-let hruftProcesses = new Map();
-let currentSavePath = app.getPath('downloads');
-
-// HRUFT配置
+// HRUFT 路径配置 (根据 README)
 const HRUFT_CONFIG = {
+    win32: {path: 'bin/windows/hruft.exe', cmd: 'hruft.exe'},
+    linux: {path: 'bin/linux/hruft', cmd: './hruft'},
+    darwin: {path: 'bin/mac/hruft', cmd: './hruft'}
+};
+
+// 在全局配置中添加 iPerf 路径
+const IPERF_CONFIG = {
     win32: {
-        path: path.join(__dirname, 'bin', 'windows', 'hruft.exe'),
-        command: 'hruft.exe'
+        iperf2: 'bin/windows/iperf2.exe',
+        iperf3: 'bin/windows/iperf3.exe'
     },
     linux: {
-        path: path.join(__dirname, 'bin', 'linux', 'hruft'),
-        command: './hruft'
+        iperf2: 'bin/linux/iperf2',
+        iperf3: 'bin/linux/iperf3'
     },
     darwin: {
-        path: path.join(__dirname, 'bin', 'mac', 'hruft'),
-        command: './hruft'
+        iperf2: 'bin/mac/iperf2',
+        iperf3: 'bin/mac/iperf3'
     }
 };
 
-// ==================== 窗口管理模块 ====================
+// ============================================================================
+//                               核心工具函数
+// ============================================================================
+
+/**
+ * 获取 HRUFT 可执行文件路径（兼容开发环境和打包环境）
+ */
+function getHruftPath() {
+    const platform = process.platform;
+    const config = HRUFT_CONFIG[platform] || HRUFT_CONFIG.linux; // 默认回退
+
+    // 1. 优先检查开发环境路径
+    let execPath = path.join(__dirname, ...config.path.split('/'));
+
+    // 2. 如果不存在，检查打包后的资源路径 (resources/bin/...)
+    if (!fs.existsSync(execPath)) {
+        execPath = path.join(process.resourcesPath, config.path);
+    }
+
+    // 3. 再次检查，如果还是不存在，打印警告
+    if (!fs.existsSync(execPath)) {
+        console.warn(`[HRUFT] Binary not found at: ${execPath}`);
+    } else if (platform !== 'win32') {
+        // 确保有执行权限
+        try {
+            fs.chmodSync(execPath, 0o755);
+        } catch (e) {
+        }
+    }
+
+    return {path: execPath, command: config.cmd};
+}
+
+/**
+ * 获取 iPerf 可执行文件路径
+ */
+function getIperfPath(version) {
+    const platform = process.platform;
+    const config = IPERF_CONFIG[platform];
+    if (!config) return null;
+
+    let execPath = path.join(__dirname, config[version]);
+
+    if (!fs.existsSync(execPath)) {
+        execPath = path.join(process.resourcesPath, config[version]);
+    }
+
+    if (!fs.existsSync(execPath)) {
+        console.warn(`[iPerf] Binary not found: ${execPath}`);
+        return null;
+    }
+
+    if (platform !== 'win32') {
+        try {
+            fs.chmodSync(execPath, 0o755);
+        } catch (e) {
+        }
+    }
+
+    return execPath;
+}
+
+/**
+ * 安全地向渲染进程发送消息
+ * @param {string} channel - IPC 通道名
+ * @param {any} data - 要发送的数据
+ */
+function safeSend(channel, data) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+            mainWindow.webContents.send(channel, data);
+        } catch (error) {
+            console.warn(`[IPC] 发送失败 (${channel}):`, error.message);
+        }
+    }
+}
+
+/**
+ * 并发控制器：限制同时运行的 Promise 数量
+ * 用于网段扫描，防止瞬间 Ping 太多导致死锁
+ */
+async function runWithConcurrency(tasks, limit) {
+    const results = [];
+    const executing = [];
+    for (const task of tasks) {
+        const p = task().then(result => {
+            executing.splice(executing.indexOf(p), 1);
+            return result;
+        });
+        results.push(p);
+        executing.push(p);
+        if (executing.length >= limit) {
+            await Promise.race(executing);
+        }
+    }
+    return Promise.all(results);
+}
+
+/**
+ * 解码命令行输出 (处理 Windows 中文乱码)
+ */
+function decodeOutput(data) {
+    return isWin ? iconv.decode(data, 'cp936') : data.toString();
+}
+
+// ============================================================================
+//                               窗口生命周期管理
+// ============================================================================
+
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 1200,
-        height: 800,
+        width: 1280,
+        height: 850,
+        minWidth: 1000,
+        minHeight: 700,
+        backgroundColor: '#0f0f1e',
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
             nodeIntegration: false
         }
     });
+
     mainWindow.loadFile('index.html');
-}
 
-// ==================== 工具函数模块 ====================
-function decodeOutput(data) {
-    const isWin = os.platform() === 'win32';
-    return isWin ? iconv.decode(data, 'cp936') : data.toString();
-}
-
-function calculateFileMD5(filePath) {
-    return new Promise((resolve, reject) => {
-        const hash = crypto.createHash('md5');
-        const stream = fs.createReadStream(filePath);
-        stream.on('data', (data) => hash.update(data));
-        stream.on('end', () => resolve(hash.digest('hex')));
-        stream.on('error', (err) => reject(err));
+    // 添加窗口销毁事件
+    mainWindow.on('closed', () => {
+        mainWindow = null;
     });
 }
 
-function formatFileSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-}
-
-function getHruftPath() {
-    const platform = process.platform;
-    const config = HRUFT_CONFIG[platform];
-
-    if (!config) {
-        throw new Error(`不支持的操作系统: ${platform}`);
-    }
-
-    if (!fs.existsSync(config.path)) {
-        throw new Error(`HRUFT可执行文件未找到: ${config.path}`);
-    }
-
-    if (platform !== 'win32') {
-        fs.chmodSync(config.path, 0o755);
-    }
-
-    return config;
-}
-
-function parseHruftOutput(data, context = {}) {
-    const lines = data.toString().trim().split('\n');
-
-    for (const line of lines) {
-        if (!line.trim()) continue;
-
-        try {
-            if (line.startsWith('{') || line.startsWith('[')) {
-                const jsonData = JSON.parse(line);
-                handleHruftJson(jsonData, context);
-            } else {
-                mainWindow.webContents.send('transfer-log', `[HRUFT] ${line}`);
-
-                const progressMatch = line.match(/Progress: (\d+\.?\d*)%/);
-                if (progressMatch && context.progressCallback) {
-                    const progress = parseFloat(progressMatch[1]);
-                    context.progressCallback(progress);
-                }
-            }
-        } catch (e) {
-            mainWindow.webContents.send('transfer-log', `[HRUFT] ${line}`);
-        }
-    }
-}
-
-function handleHruftJson(jsonData, context) {
-    const { mode } = context;
-    const eventPrefix = mode === 'send' ? 'file-send' : 'file-transfer';
-
-    switch (jsonData.type) {
-        case 'progress':
-            if (mode === 'send') {
-                mainWindow.webContents.send('file-send-progress', {
-                    sent: jsonData.current || 0,
-                    total: jsonData.total || 0,
-                    progress: jsonData.percent || 0,
-                    speed: (jsonData.speed_mbps || 0) / 8,
-                    remainingBytes: jsonData.remaining_bytes || 0,
-                    elapsedSeconds: jsonData.elapsed_seconds || 0
-                });
-            } else {
-                mainWindow.webContents.send('file-transfer-progress', {
-                    received: jsonData.current || 0,
-                    total: jsonData.total || 0,
-                    progress: jsonData.percent || 0,
-                    speed: (jsonData.speed_mbps || 0) / 8,
-                    remainingBytes: jsonData.remaining_bytes || 0,
-                    elapsedSeconds: jsonData.elapsed_seconds || 0
-                });
-            }
-            break;
-
-        case 'statistics':
-            const stats = jsonData;
-            mainWindow.webContents.send('transfer-log',
-                `📊 传输统计:\n` +
-                `  - 平均速度: ${stats.average_speed_mbps || 0} Mbps\n` +
-                `  - 最高速度: ${stats.max_speed_mbps || 0} Mbps\n` +
-                `  - 丢包率: ${stats.packet_loss_rate || 0}%\n` +
-                `  - 网络质量: ${stats.network_quality || 'Unknown'}\n` +
-                `  - 传输效率: ${stats.transfer_efficiency || 0}%`);
-            break;
-
-        case 'error':
-            const errorEvent = mode === 'send' ? 'file-send-error' : 'file-transfer-error';
-            mainWindow.webContents.send(errorEvent, {
-                error: jsonData.message || 'HRUFT传输错误'
-            });
-            break;
-
-        case 'complete':
-            const completeEvent = mode === 'send' ? 'file-send-complete' : 'file-transfer-complete';
-            mainWindow.webContents.send(completeEvent, {
-                fileName: context.fileName || '',
-                fileSize: jsonData.total_bytes || 0,
-                sourceMD5: jsonData.source_md5 || '',
-                receivedMD5: jsonData.received_md5 || '',
-                match: jsonData.md5_match || false,
-                duration: jsonData.total_time || 0,
-                protocol: 'UDT',
-                stats: jsonData
-            });
-            break;
-
-        default:
-            mainWindow.webContents.send('transfer-log',
-                `[HRUFT JSON] ${JSON.stringify(jsonData, null, 2)}`);
-    }
-}
-
-function stopAllHruftProcesses() {
-    hruftProcesses.forEach((process, key) => {
-        try {
-            process.kill();
-            mainWindow.webContents.send('transfer-log', `[HRUFT] 停止进程: ${key}`);
-        } catch (e) {
-            console.error(`停止进程失败 ${key}:`, e);
-        }
-    });
-    hruftProcesses.clear();
-}
-
-// ==================== 网络信息模块 ====================
-function getNetworkInterfaces() {
-    const interfaces = os.networkInterfaces();
-    const results = [];
-    for (const name of Object.keys(interfaces)) {
-        for (const iface of interfaces[name]) {
-            if (iface.family === 'IPv4' && !iface.internal) {
-                results.push({
-                    name: name,
-                    ip: iface.address,
-                    netmask: iface.netmask,
-                    mac: iface.mac
-                });
-            }
-        }
-    }
-    return results;
-}
-
-// ==================== Ping测试模块 ====================
-function startPingTest(config) {
-    if (pingTimer) clearInterval(pingTimer);
-
-    const { target, interval, size } = config;
-    const intervalMs = Math.max(100, interval * 1000);
-
-    const logHeader = `开始 Ping ${target} (间隔: ${interval}s, 包大小: ${size} bytes)...\n`;
-    mainWindow.webContents.send('ping-reply', logHeader);
-    mainWindow.webContents.send('ping-reply', `[提示] 使用原生 Ping 命令，强制英文环境解析 TTL/时间，精确间隔 (${intervalMs}ms)。\n`);
-
-    pingTimer = setInterval(() => {
-        let command;
-        let decode_encoding = 'utf8';
-
-        if (os.platform() === 'win32') {
-            command = `cmd.exe /C "chcp 437 && ping -n 1 -l ${size} ${target}"`;
-            decode_encoding = 'cp437';
-        } else {
-            command = `ping -c 1 -s ${size} ${target}`;
-        }
-
-        const env = os.platform() === 'win32' ? process.env : { ...process.env, LC_ALL: 'C', LANG: 'C' };
-
-        exec(command, { encoding: 'binary', env, timeout: 5000 }, (err, stdout, stderr) => {
-            let replyText;
-
-            const outputBuffer = Buffer.from(stdout, 'binary');
-            const errorBuffer = Buffer.from(stderr, 'binary');
-
-            const output = iconv.decode(outputBuffer, decode_encoding);
-            const errorOutput = iconv.decode(errorBuffer, decode_encoding);
-
-            if (err) {
-                if (output.includes('Request timed out') || output.includes('Destination host unreachable')) {
-                    replyText = `请求超时或目标不可达: ${target}\n`;
-                } else {
-                    replyText = `Ping 发生错误: ${output || errorOutput || err.message}\n`;
-                }
-            } else {
-                const lessThanOneMatch = output.match(/time<1ms/i);
-                const regularTimeMatch = output.match(/time=(\d+)ms/i);
-
-                let time;
-                if (lessThanOneMatch) {
-                    time = '<1ms';
-                } else if (regularTimeMatch) {
-                    time = `${regularTimeMatch[1]}ms`;
-                } else {
-                    time = 'N/A';
-                }
-
-                const ttlMatch = output.match(/TTL=(\d+)/i);
-                const bytesMatch = output.match(/Bytes=(\d+)|bytes=(\d+)/i);
-
-                const ttl = ttlMatch ? ttlMatch[1] : 'N/A';
-                const bytes = bytesMatch ? (bytesMatch[1] || bytesMatch[2] || size) : size;
-
-                if (output.includes('Reply from') || output.includes('transmitted, 1 received')) {
-                    replyText = `来自 ${target} 的回复：字节=${bytes} 时间=${time} TTL=${ttl}\n`;
-                } else {
-                    replyText = `请求超时或目标不可达: ${target}\n`;
-                }
-            }
-            mainWindow.webContents.send('ping-reply', replyText);
-        });
-    }, intervalMs);
-}
-
-function stopPingTest() {
-    if (pingTimer) {
-        clearInterval(pingTimer);
-        pingTimer = null;
-        mainWindow.webContents.send('ping-reply', '\n--- Ping 已停止 ---');
-    }
-}
-
-// ==================== ARP表模块 ====================
-function getArpTable() {
-    return new Promise((resolve) => {
-        exec('arp -a', { encoding: 'binary' }, (err, stdout, stderr) => {
-            if (err) return resolve(`Error: ${decodeOutput(Buffer.from(stderr, 'binary'))}`);
-            resolve(decodeOutput(Buffer.from(stdout, 'binary')));
-        });
-    });
-}
-
-// ==================== 网段扫描模块 ====================
-function calculateNetworkRange(ip, netmask) {
-    const ipParts = ip.split('.').map(Number);
-    const maskParts = netmask.split('.').map(Number);
-
-    const networkParts = ipParts.map((part, i) => part & maskParts[i]);
-    const broadcastParts = ipParts.map((part, i) => part | (~maskParts[i] & 255));
-
-    return {
-        start: networkParts.join('.'),
-        end: broadcastParts.join('.'),
-        networkParts,
-        broadcastParts
-    };
-}
-
-function generateIPList(networkParts, broadcastParts) {
-    const ips = [];
-    for (let i = networkParts[3] + 1; i < broadcastParts[3]; i++) {
-        ips.push(`${networkParts[0]}.${networkParts[1]}.${networkParts[2]}.${i}`);
-    }
-    return ips;
-}
-
-function quickPing(ip) {
-    return new Promise((resolve) => {
-        const isWin = os.platform() === 'win32';
-        const command = isWin
-            ? `ping -n 1 -w 500 ${ip}`
-            : `ping -c 1 -W 1 ${ip}`;
-
-        exec(command, { timeout: 2000 }, (err, stdout) => {
-            if (err) {
-                resolve({ ip, online: false });
-            } else {
-                const online = stdout.includes('TTL=') || stdout.includes('ttl=') ||
-                    stdout.includes('bytes from') || stdout.includes('Reply from');
-
-                let time = 'N/A';
-                const timeMatch = stdout.match(/time[=<](\d+)ms|time=(\d+\.\d+)/i);
-                if (timeMatch) {
-                    time = timeMatch[1] || timeMatch[2];
-                    time = time + 'ms';
-                } else if (stdout.includes('time<1ms')) {
-                    time = '<1ms';
-                }
-
-                resolve({ ip, online, time });
-            }
-        });
-    });
-}
-
-function getDeviceDetails(ip) {
-    return new Promise((resolve) => {
-        exec('arp -a', { encoding: 'binary' }, (err, stdout) => {
-            let mac = 'N/A';
-            let vendor = '';
-
-            if (!err) {
-                const arpOutput = decodeOutput(Buffer.from(stdout, 'binary'));
-                const lines = arpOutput.split('\n');
-
-                for (const line of lines) {
-                    if (line.includes(ip)) {
-                        const macMatch = line.match(/([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})/);
-                        if (macMatch) {
-                            mac = macMatch[0].toUpperCase().replace(/-/g, ':');
-                            vendor = getVendorFromMAC(mac);
-                        }
-                        break;
-                    }
-                }
-            }
-            resolve({ mac, vendor, hostname: '' });
-        });
-    });
-}
-
-function getVendorFromMAC(mac) {
-    const prefix = mac.substring(0, 8).replace(/:/g, '').toUpperCase();
-    const vendors = {
-        '001122': 'CIMSYS Inc', '0050F2': 'Microsoft', '00155D': 'Microsoft',
-        '000C29': 'VMware', '005056': 'VMware', '0A0027': 'VirtualBox',
-        '080027': 'VirtualBox', '001DD8': 'HP', '001E68': 'HP',
-        '7054D9': 'Apple', '001451': 'Apple', 'D89695': 'Apple',
-        '8863DF': 'Apple', 'F0D1A9': 'Apple', '3C0754': 'Apple',
-        '44D884': 'Apple', '001C42': 'Parallels', '000D3A': 'D-Link',
-        'B0C090': 'Intel', '000E0C': 'Intel', 'AC220B': 'Intel',
-        'F4B301': 'Realtek', '001FC6': 'Realtek', '00E04C': 'Realtek',
-    };
-
-    for (const [key, value] of Object.entries(vendors)) {
-        if (prefix.startsWith(key)) return value;
-    }
-    return 'Unknown';
-}
-
-async function startNetworkScan(config) {
-    if (scanInProgress) {
-        mainWindow.webContents.send('scan-status', { error: '扫描正在进行中...' });
-        return;
-    }
-
-    scanInProgress = true;
-    const { ip, netmask } = config;
-
-    try {
-        mainWindow.webContents.send('scan-status', {
-            status: 'calculating',
-            message: '正在计算网段范围...'
-        });
-
-        const range = calculateNetworkRange(ip, netmask);
-        const ipList = generateIPList(range.networkParts, range.broadcastParts);
-
-        mainWindow.webContents.send('scan-status', {
-            status: 'scanning',
-            message: `开始扫描 ${ipList.length} 个IP地址...`,
-            total: ipList.length,
-            current: 0
-        });
-
-        const batchSize = 10;
-        const results = [];
-
-        for (let i = 0; i < ipList.length; i += batchSize) {
-            if (!scanInProgress) break;
-            const batch = ipList.slice(i, i + batchSize);
-            const batchResults = await Promise.all(batch.map(quickPing));
-
-            for (const result of batchResults) {
-                if (result.online) {
-                    const details = await getDeviceDetails(result.ip);
-                    results.push({
-                        ip: result.ip,
-                        time: result.time,
-                        mac: details.mac,
-                        vendor: details.vendor,
-                        hostname: details.hostname
-                    });
-
-                    mainWindow.webContents.send('scan-device-found', {
-                        ip: result.ip,
-                        time: result.time,
-                        mac: details.mac,
-                        vendor: details.vendor
-                    });
-                }
-            }
-
-            mainWindow.webContents.send('scan-status', {
-                status: 'scanning',
-                message: `扫描中... ${Math.min(i + batchSize, ipList.length)}/${ipList.length}`,
-                total: ipList.length,
-                current: Math.min(i + batchSize, ipList.length),
-                found: results.length
-            });
-        }
-
-        if (scanInProgress) {
-            mainWindow.webContents.send('scan-status', {
-                status: 'completed',
-                message: `扫描完成！发现 ${results.length} 台在线设备`,
-                total: ipList.length,
-                current: ipList.length,
-                found: results.length,
-                devices: results
-            });
-        }
-
-    } catch (error) {
-        mainWindow.webContents.send('scan-status', {
-            status: 'error',
-            error: error.message
-        });
-    } finally {
-        scanInProgress = false;
-    }
-}
-
-function stopNetworkScan() {
-    scanInProgress = false;
-    mainWindow.webContents.send('scan-status', {
-        status: 'stopped',
-        message: '扫描已停止'
-    });
-}
-
-// ==================== 吞吐量测试模块 ====================
-function startTcpServer(port, resolve) {
-    throughputServer = net.createServer((socket) => {
-        socket.on('data', (data) => {
-            totalBytesReceived += data.length;
-        });
-        socket.on('close', () => {
-            mainWindow.webContents.send('tp-log', 'TCP 连接关闭');
-        });
-        socket.on('error', (err) => {
-            mainWindow.webContents.send('tp-log', `TCP Server Socket 错误: ${err.message}`);
-        });
-    });
-
-    throughputServer.listen(port, '0.0.0.0', () => {
-        resolve(`TCP 服务端已启动，监听端口: ${port}`);
-    });
-
-    throughputServer.on('error', (err) => {
-        resolve(`TCP 服务端启动失败: ${err.message}`);
-    });
-}
-
-function startUdpServer(port, resolve) {
-    udpServer = dgram.createSocket('udp4');
-
-    udpServer.on('message', (msg) => {
-        totalBytesReceived += msg.length;
-    });
-
-    udpServer.on('listening', () => {
-        resolve(`UDP 服务端已启动，监听端口: ${port}`);
-    });
-
-    udpServer.on('error', (err) => {
-        resolve(`UDP 服务端错误: ${err.message}`);
-        udpServer.close();
-    });
-
-    udpServer.bind(port, '0.0.0.0');
-}
-
-async function startThroughputServer(config) {
-    return new Promise((resolve) => {
-        const { port, protocol } = config;
-
-        if (throughputServer) throughputServer.close(() => throughputServer = null);
-        if (udpServer) udpServer.close(() => udpServer = null);
-
-        totalBytesReceived = 0;
-        lastCheckTime = Date.now();
-        if (speedTimer) clearInterval(speedTimer);
-
-        speedTimer = setInterval(calculateSpeed, 1000);
-
-        if (protocol === 'tcp') {
-            startTcpServer(port, resolve);
-        } else if (protocol === 'udp') {
-            startUdpServer(port, resolve);
-        } else {
-            resolve('错误：未知的协议');
-        }
-    });
-}
-
-function calculateSpeed() {
-    const now = Date.now();
-    const duration = (now - lastCheckTime) / 1000;
-
-    if (duration >= 1) {
-        const speedMbps = ((totalBytesReceived * 8) / (1024 * 1024)) / duration;
-        mainWindow.webContents.send('tp-data', speedMbps.toFixed(2));
-        totalBytesReceived = 0;
-        lastCheckTime = now;
-    }
-}
-
-function startTcpClient(ip, port) {
-    throughputSocket = new net.Socket();
-    const chunkSize = 64 * 1024;
-    const buffer = Buffer.alloc(chunkSize, 'x');
-
-    throughputSocket.connect(port, ip, () => {
-        mainWindow.webContents.send('tp-log', `已连接到 ${ip}:${port} (TCP)，开始发送数据...`);
-
-        function write() {
-            if (!testing) return;
-            let ok = true;
-            do {
-                ok = throughputSocket.write(buffer);
-            } while (ok && testing);
-
-            if (testing) throughputSocket.once('drain', write);
-        }
-        write();
-    });
-
-    throughputSocket.on('error', (err) => {
-        testing = false;
-        mainWindow.webContents.send('tp-log', `TCP 连接错误: ${err.message}`);
-    });
-
-    throughputSocket.on('close', () => {
-        testing = false;
-        mainWindow.webContents.send('tp-log', `TCP 连接已关闭`);
-    });
-}
-
-function startUdpClient(ip, port, bandwidthMbps, packetSize) {
-    const buffer = Buffer.alloc(packetSize, 'x');
-
-    const targetBitsPerSecond = bandwidthMbps * 1024 * 1024;
-    const bitsPerPacket = packetSize * 8;
-    const packetsPerSecond = targetBitsPerSecond / bitsPerPacket;
-
-    const intervalMs = Math.max(1, 1000 / packetsPerSecond);
-
-    udpClient = dgram.createSocket('udp4');
-    mainWindow.webContents.send('tp-log', `已启动 UDP 客户端。目标: ${ip}:${port}，速率: ${bandwidthMbps}Mbps，间隔: ${intervalMs.toFixed(2)}ms`);
-
-    udpClientTimer = setInterval(() => {
-        if (!testing) {
-            clearInterval(udpClientTimer);
-            return;
-        }
-        udpClient.send(buffer, port, ip, (err) => {
-            if (err) {
-                mainWindow.webContents.send('tp-log', `UDP 发送错误: ${err.message}`);
-                testing = false;
-                clearInterval(udpClientTimer);
-            }
-        });
-    }, intervalMs);
-
-    udpClient.on('error', (err) => {
-        testing = false;
-        clearInterval(udpClientTimer);
-        mainWindow.webContents.send('tp-log', `UDP Client 错误: ${err.message}`);
-    });
-}
-
-function startThroughputClient(config) {
-    testing = true;
-    const { ip, port, protocol, bandwidth, size } = config;
-
-    if (throughputSocket) throughputSocket.end();
-    if (udpClientTimer) clearInterval(udpClientTimer);
-    if (udpClient) udpClient.close(() => udpClient = null);
-
-    if (protocol === 'tcp') {
-        startTcpClient(ip, port);
-    } else if (protocol === 'udp') {
-        startUdpClient(ip, port, bandwidth, size);
-    }
-}
-
-function stopThroughputTest() {
-    testing = false;
-    if (speedTimer) clearInterval(speedTimer);
-    if (throughputServer) throughputServer.close();
-    if (udpServer) udpServer.close();
-    if (throughputSocket) throughputSocket.end();
-    if (udpClientTimer) clearInterval(udpClientTimer);
-    if (udpClient) udpClient.close();
-
-    throughputServer = null;
-    udpServer = null;
-    throughputSocket = null;
-    udpClient = null;
-    udpClientTimer = null;
-    speedTimer = null;
-
-    mainWindow.webContents.send('tp-log', '测试已停止');
-}
-
-// ==================== TCP文件传输模块 ====================
-function handleTcpConnection(socket) {
-    let fileInfo = null;
-    let metadataBuffer = Buffer.alloc(0);
-    let metadataReceived = false;
-    let writeStream = null;
-    let fileHash = null;
-    let receivedBytes = 0;
-    let startTime = 0;
-    let lastProgressTime = 0;
-    let lastReceivedBytes = 0;
-
-    socket.on('data', (chunk) => {
-        if (!metadataReceived) {
-            metadataBuffer = Buffer.concat([metadataBuffer, chunk]);
-            const delimiter = Buffer.from('\n###END_METADATA###\n');
-            const delimiterIndex = metadataBuffer.indexOf(delimiter);
-
-            if (delimiterIndex !== -1) {
-                const metadataStr = metadataBuffer.slice(0, delimiterIndex).toString('utf8');
-                try {
-                    fileInfo = JSON.parse(metadataStr);
-                    metadataReceived = true;
-                    startTime = Date.now();
-                    lastProgressTime = Date.now();
-                    const filePath = path.join(currentSavePath, fileInfo.fileName);
-                    writeStream = fs.createWriteStream(filePath);
-                    fileHash = crypto.createHash('md5');
-
-                    mainWindow.webContents.send('file-transfer-start', {
-                        fileName: fileInfo.fileName,
-                        fileSize: fileInfo.fileSize,
-                        sourceMD5: fileInfo.md5
-                    });
-                    mainWindow.webContents.send('transfer-log', `[TCP] 开始接收: ${fileInfo.fileName}`);
-
-                    const remainingData = metadataBuffer.slice(delimiterIndex + delimiter.length);
-                    metadataBuffer = null;
-                    if (remainingData.length > 0) handleFileChunk(remainingData);
-                } catch (err) {
-                    socket.destroy();
-                }
-            }
-        } else {
-            handleFileChunk(chunk);
-        }
-    });
-
-    function handleFileChunk(data) {
-        if (!writeStream) return;
-        const canWrite = writeStream.write(data);
-        fileHash.update(data);
-        receivedBytes += data.length;
-
-        if (!canWrite) {
-            socket.pause();
-            writeStream.once('drain', () => socket.resume());
-        }
-
-        const now = Date.now();
-        if (now - lastProgressTime >= 200 || receivedBytes === fileInfo.fileSize) {
-            const progress = (receivedBytes / fileInfo.fileSize) * 100;
-            const duration = (now - lastProgressTime) / 1000;
-            const speed = duration > 0 ? (receivedBytes - lastReceivedBytes) / duration : 0;
-
-            mainWindow.webContents.send('file-transfer-progress', {
-                received: receivedBytes,
-                total: fileInfo.fileSize,
-                progress: progress.toFixed(2),
-                speed: (speed / (1024 * 1024)).toFixed(2)
-            });
-            lastProgressTime = now;
-            lastReceivedBytes = receivedBytes;
-        }
-
-        if (receivedBytes >= fileInfo.fileSize) {
-            finishTransfer();
-        }
-    }
-
-    function finishTransfer() {
-        writeStream.end(async () => {
-            const receivedMD5 = fileHash.digest('hex');
-            const totalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
-            const match = receivedMD5 === fileInfo.md5;
-
-            mainWindow.webContents.send('file-transfer-complete', {
-                fileName: fileInfo.fileName,
-                fileSize: fileInfo.fileSize,
-                sourceMD5: fileInfo.md5,
-                receivedMD5: receivedMD5,
-                match: match,
-                duration: totalDuration,
-                protocol: 'TCP'
-            });
-            socket.end();
-        });
-    }
-}
-
-function sendTcpFile(ip, port, filePath, fileName, fileSize, md5) {
-    const client = new net.Socket();
-    let bytesSent = 0;
-    const startTime = Date.now();
-    let lastProgressTime = Date.now();
-    let lastSentBytes = 0;
-
-    client.connect(port, ip, () => {
-        mainWindow.webContents.send('file-send-start', { fileName, fileSize, md5 });
-        const metadata = JSON.stringify({ fileName, fileSize, md5 });
-        client.write(metadata + '\n###END_METADATA###\n');
-
-        const readStream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
-
-        readStream.on('data', (chunk) => {
-            const canContinue = client.write(chunk);
-            bytesSent += chunk.length;
-
-            const now = Date.now();
-            if (now - lastProgressTime >= 200) {
-                const progress = (bytesSent / fileSize) * 100;
-                const duration = (now - lastProgressTime) / 1000;
-                const speed = duration > 0 ? (bytesSent - lastSentBytes) / duration : 0;
-                mainWindow.webContents.send('file-send-progress', {
-                    sent: bytesSent,
-                    total: fileSize,
-                    progress: progress.toFixed(2),
-                    speed: (speed / (1024 * 1024)).toFixed(2)
-                });
-                lastProgressTime = now;
-                lastSentBytes = bytesSent;
-            }
-
-            if (!canContinue) {
-                readStream.pause();
-                client.once('drain', () => readStream.resume());
-            }
-        });
-
-        readStream.on('end', () => {
-            const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-            mainWindow.webContents.send('file-send-complete', { fileName, fileSize, md5, duration, protocol: 'TCP' });
-            client.end();
-        });
-
-        readStream.on('error', (err) => {
-            mainWindow.webContents.send('file-send-error', { error: err.message });
-        });
-    });
-
-    client.on('error', (err) => {
-        mainWindow.webContents.send('file-send-error', { error: err.message });
-    });
-}
-
-// ==================== HRUFT文件传输模块 ====================
-async function startHruftServer(config) {
-    return new Promise((resolve, reject) => {
-        const { port, savePath } = config;
-        currentSavePath = savePath;
-
-        if (hruftReceiverProcess) {
-            hruftReceiverProcess.kill();
-            hruftReceiverProcess = null;
-        }
-
-        try {
-            const hruft = getHruftPath();
-            const args = [
-                'recv',
-                port.toString(),
-                savePath,
-                '--detailed'
-            ];
-
-            mainWindow.webContents.send('transfer-log',
-                `[HRUFT] 启动接收服务: ${hruft.command} ${args.join(' ')}`);
-
-            hruftReceiverProcess = spawn(hruft.path, args, {
-                cwd: path.dirname(hruft.path),
-                stdio: ['pipe', 'pipe', 'pipe']
-            });
-
-            const processId = `receiver-${port}`;
-            hruftProcesses.set(processId, hruftReceiverProcess);
-
-            hruftReceiverProcess.stdout.on('data', (data) => {
-                parseHruftOutput(data, {
-                    mode: 'receive',
-                    type: 'server',
-                    port: port
-                });
-            });
-
-            hruftReceiverProcess.stderr.on('data', (data) => {
-                const errorMsg = data.toString();
-                if (!errorMsg.includes('warning') && !errorMsg.includes('note')) {
-                    mainWindow.webContents.send('transfer-log',
-                        `[HRUFT Error] ${errorMsg}`);
-                }
-            });
-
-            hruftReceiverProcess.on('close', (code) => {
-                hruftProcesses.delete(processId);
-                hruftReceiverProcess = null;
-
-                if (code !== 0 && code !== null) {
-                    mainWindow.webContents.send('transfer-log',
-                        `[HRUFT] 接收进程异常退出 (code: ${code})`);
-                } else {
-                    mainWindow.webContents.send('transfer-log',
-                        '[HRUFT] 接收进程已停止');
-                }
-            });
-
-            hruftReceiverProcess.on('error', (err) => {
-                reject(`HRUFT启动失败: ${err.message}`);
-            });
-
-            setTimeout(() => {
-                resolve(`HRUFT接收服务已启动\n端口: ${port}\n保存路径: ${savePath}`);
-            }, 1000);
-
-        } catch (error) {
-            reject(error.message);
-        }
-    });
-}
-
-function sendFileWithHruft(ip, port, filePath, udtConfig = {}) {
-    const fileName = path.basename(filePath);
-    const transferId = `send-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    if (hruftProcesses.has(transferId)) {
-        hruftProcesses.get(transferId).kill();
-        hruftProcesses.delete(transferId);
-    }
-
-    try {
-        const hruft = getHruftPath();
-
-        const args = [
-            'send',
-            ip,
-            port.toString(),
-            filePath,
-            '--detailed'
-        ];
-
-        if (udtConfig.packetSize) {
-            args.push('--mss', udtConfig.packetSize.toString());
-        }
-
-        if (udtConfig.windowSize) {
-            const windowBytes = udtConfig.windowSize * (udtConfig.packetSize || 1400);
-            args.push('--window', windowBytes.toString());
-        }
-
-        if (udtConfig.bandwidth) {
-            args.push('--bandwidth', udtConfig.bandwidth.toString());
-        }
-
-        mainWindow.webContents.send('transfer-log',
-            `[HRUFT] 开始发送: ${fileName}\n` +
-            `       命令: ${hruft.command} ${args.slice(0, 4).join(' ')} ...`);
-
-        const senderProcess = spawn(hruft.path, args, {
-            cwd: path.dirname(hruft.path),
-            stdio: ['pipe', 'pipe', 'pipe']
-        });
-
-        hruftProcesses.set(transferId, senderProcess);
-        hruftSenderProcess = senderProcess;
-
-        mainWindow.webContents.send('file-send-start', {
-            fileName: fileName,
-            fileSize: fs.statSync(filePath).size,
-            md5: '计算中...'
-        });
-
-        senderProcess.stdout.on('data', (data) => {
-            parseHruftOutput(data, {
-                mode: 'send',
-                type: 'client',
-                transferId: transferId,
-                fileName: fileName,
-                progressCallback: (progress) => {
-                    const fileSize = fs.statSync(filePath).size;
-                    mainWindow.webContents.send('file-send-progress', {
-                        sent: (progress / 100) * fileSize,
-                        total: fileSize,
-                        progress: progress,
-                        speed: 0,
-                        remainingBytes: fileSize - (progress / 100) * fileSize
-                    });
-                }
-            });
-        });
-
-        senderProcess.stderr.on('data', (data) => {
-            const errorMsg = data.toString();
-            if (errorMsg.includes('error') || errorMsg.includes('Error')) {
-                mainWindow.webContents.send('file-send-error', {
-                    error: `HRUFT错误: ${errorMsg}`
-                });
-            } else {
-                mainWindow.webContents.send('transfer-log', `[HRUFT] ${errorMsg}`);
-            }
-        });
-
-        senderProcess.on('close', (code) => {
-            hruftProcesses.delete(transferId);
-
-            if (code === 0) {
-                mainWindow.webContents.send('transfer-log',
-                    `✅ 文件发送完成: ${fileName}`);
-            } else {
-                mainWindow.webContents.send('file-send-error', {
-                    error: `发送失败 (退出码: ${code})`
-                });
-            }
-        });
-
-        senderProcess.on('error', (err) => {
-            hruftProcesses.delete(transferId);
-            mainWindow.webContents.send('file-send-error', {
-                error: `HRUFT进程错误: ${err.message}`
-            });
-        });
-
-    } catch (error) {
-        mainWindow.webContents.send('file-send-error', {
-            error: `启动HRUFT失败: ${error.message}`
-        });
-    }
-}
-
-async function handleFileSend(config) {
-    const { ip, port, filePath, protocol, udtConfig } = config;
-
-    if (!fs.existsSync(filePath)) {
-        mainWindow.webContents.send('file-send-error', {
-            error: '文件不存在'
-        });
-        return;
-    }
-
-    const fileName = path.basename(filePath);
-    const fileSize = fs.statSync(filePath).size;
-
-    if (protocol === 'tcp') {
-        const md5 = await calculateFileMD5(filePath);
-        sendTcpFile(ip, port, filePath, fileName, fileSize, md5);
-        return;
-    }
-
-    if (protocol === 'udt') {
-        sendFileWithHruft(ip, port, filePath, udtConfig);
-    }
-}
-
-function stopHruftServer() {
-    stopAllHruftProcesses();
-    mainWindow.webContents.send('transfer-log', 'HRUFT接收服务已停止');
-}
-
-// ==================== IPC主进程通信处理 ====================
-function setupIpcHandlers() {
-    // 网络信息模块
-    ipcMain.handle('net:interfaces', () => getNetworkInterfaces());
-
-    // Ping测试模块
-    ipcMain.on('net:ping-start', (event, config) => startPingTest(config));
-    ipcMain.on('net:ping-stop', () => stopPingTest());
-
-    // ARP表模块
-    ipcMain.handle('net:arp', async () => await getArpTable());
-
-    // 网段扫描模块
-    ipcMain.on('net:scan-start', async (event, config) => await startNetworkScan(config));
-    ipcMain.on('net:scan-stop', () => stopNetworkScan());
-
-    // 吞吐量测试模块
-    ipcMain.handle('net:tp-server', (event, config) => startThroughputServer(config));
-    ipcMain.on('net:tp-client-start', (event, config) => startThroughputClient(config));
-    ipcMain.on('net:tp-stop', () => stopThroughputTest());
-
-    // 文件传输模块
-    ipcMain.handle('file:select-save-path', async () => {
-        const result = await dialog.showOpenDialog(mainWindow, {
-            properties: ['openDirectory'],
-            defaultPath: currentSavePath
-        });
-        if (!result.canceled && result.filePaths.length > 0) {
-            currentSavePath = result.filePaths[0];
-            return currentSavePath;
-        }
-        return null;
-    });
-
-    ipcMain.handle('file:start-server', (event, config) => startHruftServer(config));
-    ipcMain.on('file:stop-server', () => stopHruftServer());
-    ipcMain.on('file:send', async (event, config) => await handleFileSend(config));
-
-    ipcMain.handle('file:select-send-file', async () => {
-        const result = await dialog.showOpenDialog(mainWindow, {
-            properties: ['openFile'],
-            title: '选择要发送的文件'
-        });
-
-        if (!result.canceled && result.filePaths.length > 0) {
-            const filePath = result.filePaths[0];
-            const stats = fs.statSync(filePath);
-            return {
-                path: filePath,
-                name: path.basename(filePath),
-                size: stats.size
-            };
-        }
-        return null;
-    });
-}
-
-// ==================== 应用生命周期管理 ====================
 app.whenReady().then(() => {
     createWindow();
-    setupIpcHandlers();
+    setupIpcHandlers(); // 注册所有模块的 IPC
 });
 
 app.on('window-all-closed', () => {
+    // 先清理所有模块
+    try {
+        FileTransferModule.cleanup();
+        ScanModule.cleanup();
+        PingModule.cleanup();
+        ThroughputModule.cleanup();
+    } catch (e) {
+        console.warn('[Cleanup] 清理失败:', e.message);
+    }
+
+    // 再退出应用
     if (process.platform !== 'darwin') {
         app.quit();
     }
 });
 
-app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-    }
-});
+// 退出前清理所有子进程
+/*app.on('before-quit', () => {
+    FileTransferModule.cleanup();
+    ScanModule.cleanup();
+    PingModule.cleanup();
+    ThroughputModule.cleanup();
+});*/
 
-app.on('before-quit', () => {
-    stopAllHruftProcesses();
-    if (fileTransferServer) fileTransferServer.close();
-});
+// ============================================================================
+//                               IPC 路由注册
+// ============================================================================
+
+function setupIpcHandlers() {
+    // 1. 系统信息
+    ipcMain.handle('net:interfaces', SystemInfoModule.getInterfaces);
+
+    // 2. Ping 测试
+    ipcMain.on('net:ping-start', (e, c) => PingModule.start(c));
+    ipcMain.on('net:ping-stop', () => PingModule.stop());
+
+    // 3. ARP & 扫描
+    ipcMain.handle('net:arp', ArpModule.getTable);
+    ipcMain.on('net:scan-start', (e, c) => ScanModule.start(c));
+    ipcMain.on('net:scan-stop', () => ScanModule.stop());
+
+    // 4. 吞吐量测试
+    ipcMain.handle('net:tp-server', (e, c) => ThroughputModule.startServer(c));
+    ipcMain.on('net:tp-server-stop', () => ThroughputModule.stopServer());
+    ipcMain.on('net:tp-client-start', (e, c) => ThroughputModule.startClient(c));
+    ipcMain.on('net:tp-stop', () => ThroughputModule.stopClient());
+
+    // 5. 文件传输 (TCP & HRUFT)
+    ipcMain.handle('file:select-save-path', FileTransferModule.selectSavePath);
+    ipcMain.handle('file:select-send-file', FileTransferModule.selectSendFile);
+    ipcMain.handle('file:start-server', (e, c) => FileTransferModule.startServer(c));
+    ipcMain.on('file:stop-server', () => FileTransferModule.stopServer());
+    ipcMain.on('file:send', (e, c) => FileTransferModule.send(c));
+    // HRUFT 特定操作
+    ipcMain.on('file:cancel-transfer', (e, id) => FileTransferModule.cancelHruft(id));
+}
+
+// ============================================================================
+//                          模块 1: System Info (系统信息)
+// ============================================================================
+const SystemInfoModule = {
+    getInterfaces: () => {
+        const interfaces = os.networkInterfaces();
+        const results = [];
+        for (const name of Object.keys(interfaces)) {
+            for (const iface of interfaces[name]) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                    results.push({
+                        name: name,
+                        ip: iface.address,
+                        netmask: iface.netmask,
+                        mac: iface.mac
+                    });
+                }
+            }
+        }
+        return results;
+    }
+};
+
+// ============================================================================
+//                          模块 2: Ping Test (Ping 测试)
+// ============================================================================
+const PingModule = {
+    timer: null,
+
+    start: (config) => {
+        PingModule.stop();
+        const { target, interval, size } = config;
+        const intervalMs = Math.max(100, interval * 1000);
+
+        safeSend('ping-reply', `开始 Ping ${target}...\n`); // 使用 safeSend
+
+        PingModule.timer = setInterval(() => {
+            let cmd;
+            if (isWin) {
+                cmd = `cmd.exe /C "chcp 437 && ping -n 1 -l ${size} ${target}"`;
+            } else {
+                cmd = `ping -c 1 -s ${size} ${target}`;
+            }
+
+            const env = isWin ? process.env : { ...process.env, LC_ALL: 'C' };
+
+            exec(cmd, { encoding: 'binary', env, timeout: 2000 }, (err, stdout, stderr) => {
+                const output = decodeOutput(Buffer.from(stdout, 'binary'));
+                let reply = '';
+
+                if (output.includes('TTL=') || output.includes('ttl=')) {
+                    const timeMatch = output.match(/time[=<]([\d\.]+)ms/i);
+                    const time = timeMatch ? `时间=${timeMatch[1]}ms` : '';
+                    reply = `来自 ${target} 的回复: 字节=${size} ${time}`;
+                } else if (output.includes('timed out')) {
+                    reply = `请求超时`;
+                } else {
+                    reply = isWin ? output.split('\n')[2] : output;
+                }
+
+                safeSend('ping-reply', `${reply}\n`); // 使用 safeSend
+            });
+        }, intervalMs);
+    },
+
+    stop: () => {
+        if (PingModule.timer) {
+            clearInterval(PingModule.timer);
+            PingModule.timer = null;
+            safeSend('ping-reply', `\n--- Ping 已停止 ---\n`); // 使用 safeSend
+        }
+    },
+
+    cleanup: () => PingModule.stop()
+};
+
+// ============================================================================
+//                          模块 3: ARP & Network Scan (扫描)
+// ============================================================================
+const ArpModule = {
+    getTable: async () => {
+        return new Promise((resolve) => {
+            exec('arp -a', {encoding: 'binary'}, (err, stdout, stderr) => {
+                if (err) resolve(`Error: ${err.message}`);
+                resolve(decodeOutput(Buffer.from(stdout, 'binary')));
+            });
+        });
+    }
+};
+
+const ScanModule = {
+    inProgress: false,
+
+    start: async (config) => {
+        if (ScanModule.inProgress) return;
+        ScanModule.inProgress = true;
+
+        const { ip, timeout } = config;
+
+        try {
+            // 1. 计算网段
+            const subnet = ip.split('.').slice(0, 3).join('.');
+            const ips = [];
+            for (let i = 1; i < 255; i++) ips.push(`${subnet}.${i}`);
+
+            const totalIps = ips.length;
+            let scannedCount = 0;
+            let foundCount = 0;
+
+            // 发送初始状态
+            safeSend('scan-status', {
+                status: 'scanning',
+                message: `正在扫描 ${totalIps} 个地址...`,
+                total: totalIps,
+                current: 0,
+                found: 0
+            });
+
+            // 2. 定义单个 IP 扫描任务
+            const scanTask = async (targetIp) => {
+                if (!ScanModule.inProgress) return;
+
+                const pingCmd = isWin
+                    ? `ping -n 1 -w ${timeout} ${targetIp}`
+                    : `ping -c 1 -W ${timeout/1000} ${targetIp}`;
+
+                try {
+                    await new Promise((resolve) => {
+                        exec(pingCmd, { timeout: timeout + 500 }, (err, stdout) => {
+                            scannedCount++;
+
+                            // 🔧 修复点 1: 改进进度更新逻辑
+                            const shouldUpdate =
+                                scannedCount % 5 === 0 ||           // 每5个更新
+                                scannedCount === totalIps ||         // 最后一个必须更新
+                                scannedCount === 1;                  // 第一个也更新
+
+                            if (shouldUpdate) {
+                                const percent = Math.round((scannedCount / totalIps) * 100);
+                                safeSend('scan-status', {
+                                    status: 'scanning',
+                                    message: `扫描中... ${percent}% (${scannedCount}/${totalIps})`,
+                                    total: totalIps,
+                                    current: scannedCount,
+                                    found: foundCount
+                                });
+                            }
+
+                            // 检查是否 Ping 通
+                            if (!err && (stdout.includes('TTL=') || stdout.includes('ttl='))) {
+                                foundCount++;
+
+                                // 获取 MAC 地址
+                                exec(`arp -a ${targetIp}`, (e, out) => {
+                                    let mac = 'Unknown';
+                                    if (!e) {
+                                        const match = out.match(/([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})/);
+                                        if (match) mac = match[0];
+                                    }
+
+                                    safeSend('scan-device-found', {
+                                        ip: targetIp,
+                                        mac: mac,
+                                        vendor: 'Unknown',
+                                        time: `<${timeout}ms`
+                                    });
+
+                                    resolve();
+                                });
+                            } else {
+                                resolve();
+                            }
+                        });
+                    });
+                } catch (e) {
+                    scannedCount++;
+                    // 超时也算扫描完成
+                }
+            };
+
+            // 3. 并发执行扫描 (限制并发数 20)
+            await runWithConcurrency(
+                ips.map(ip => () => scanTask(ip)),
+                20
+            );
+
+            // 🔧 修复点 2: 确保最终状态为 100%
+            if (ScanModule.inProgress) {
+                safeSend('scan-status', {
+                    status: 'completed',
+                    message: `扫描完成 - 发现 ${foundCount} 台设备`,
+                    total: totalIps,
+                    current: totalIps,  // 确保是总数
+                    found: foundCount,
+                    percent: 100        // 明确指定 100%
+                });
+            }
+
+        } catch (e) {
+            safeSend('scan-status', {
+                status: 'error',
+                error: e.message,
+                message: `扫描出错: ${e.message}`
+            });
+        } finally {
+            ScanModule.inProgress = false;
+        }
+    },
+
+    stop: () => {
+        ScanModule.inProgress = false;
+        safeSend('scan-status', {
+            status: 'stopped',
+            message: '扫描已停止',
+            percent: 0  // 重置进度
+        });
+    },
+
+    cleanup: () => ScanModule.stop()
+};
+
+// ============================================================================
+//                          模块 4: 重写吞吐量测试模块 (iPerf 版本)
+// ============================================================================
+
+const ThroughputModule = {
+    serverProcess: null,
+    clientProcess: null,
+
+    startServer: (config) => {
+        return new Promise((resolve, reject) => {
+            ThroughputModule.stopServer();
+
+            const { port, protocol, version } = config;
+            const iperfPath = getIperfPath(version);
+
+            if (!iperfPath) {
+                return resolve(`错误: ${version} 未找到`);
+            }
+
+            const args = [];
+
+            if (version === 'iperf3') {
+                args.push('-s', '-p', port.toString());
+                if (protocol === 'udp') args.push('--udp');
+            } else {
+                args.push('-s', '-p', port.toString());
+                if (protocol === 'udp') args.push('-u');
+            }
+
+            const child = spawn(iperfPath, args);
+            ThroughputModule.serverProcess = child;
+
+            child.stdout.on('data', data => {
+                safeSend('tp-log', decodeOutput(data));
+            });
+
+            child.stderr.on('data', data => {
+                safeSend('tp-log', `[错误] ${decodeOutput(data)}`);
+            });
+
+            child.on('close', code => {
+                safeSend('tp-log', `服务端已停止 (code: ${code})`);
+                ThroughputModule.serverProcess = null;
+            });
+
+            resolve(`${version} 服务端已启动 (端口: ${port}, 协议: ${protocol.toUpperCase()})`);
+        });
+    },
+
+    stopServer: () => {
+        if (ThroughputModule.serverProcess) {
+            try {
+                ThroughputModule.serverProcess.kill();
+            } catch (e) {
+                console.warn('[Throughput] 停止服务端失败:', e.message);
+            }
+            ThroughputModule.serverProcess = null;
+            safeSend('tp-log', '服务端已停止');
+        }
+    },
+
+    startClient: (config) => {
+        ThroughputModule.stopClient();
+
+        const { ip, port, protocol, duration, bandwidth, version } = config;
+        const iperfPath = getIperfPath(version);
+
+        if (!iperfPath) {
+            safeSend('tp-log', `错误: ${version} 未找到`);
+            return;
+        }
+
+        const args = [];
+
+        if (version === 'iperf3') {
+            args.push('-c', ip, '-p', port.toString(), '-t', duration.toString());
+            if (protocol === 'udp') {
+                args.push('--udp', '-b', `${bandwidth}M`);
+            }
+            args.push('-i', '1');
+        } else {
+            args.push('-c', ip, '-p', port.toString(), '-t', duration.toString(), '-i', '1');
+            if (protocol === 'udp') {
+                args.push('-u', '-b', `${bandwidth}M`);
+            }
+        }
+
+        const child = spawn(iperfPath, args);
+        ThroughputModule.clientProcess = child;
+
+        safeSend('tp-log', `开始测试: ${ip}:${port} (${protocol.toUpperCase()})`);
+
+        child.stdout.on('data', data => {
+            const output = decodeOutput(data);
+            safeSend('tp-log', output);
+
+            const speedMatch = output.match(/([\d\.]+)\s+(M|G)bits\/sec/);
+            if (speedMatch) {
+                let speed = parseFloat(speedMatch[1]);
+                if (speedMatch[2] === 'G') speed *= 1000;
+                safeSend('tp-data', speed.toFixed(2));
+            }
+        });
+
+        child.stderr.on('data', data => {
+            safeSend('tp-log', `[错误] ${decodeOutput(data)}`);
+        });
+
+        child.on('close', code => {
+            safeSend('tp-log', `测试完成 (code: ${code})`);
+            ThroughputModule.clientProcess = null;
+        });
+    },
+
+    stopClient: () => {
+        if (ThroughputModule.clientProcess) {
+            try {
+                ThroughputModule.clientProcess.kill();
+            } catch (e) {
+                console.warn('[Throughput] 停止客户端失败:', e.message);
+            }
+            ThroughputModule.clientProcess = null;
+            safeSend('tp-log', '测试已停止');
+        }
+    },
+
+    cleanup: () => {
+        ThroughputModule.stopClient();
+        ThroughputModule.stopServer();
+    }
+};
+
+// ============================================================================
+//                          模块 5: File Transfer (文件传输 & HRUFT)
+// ============================================================================
+const FileTransferModule = {
+    hruftProcesses: new Map(), // 存储运行中的 HRUFT 子进程
+    tcpServer: null,
+    currentProtocol: 'hruft', // 记录当前接收协议
+
+    selectSavePath: async () => {
+        const {filePaths} = await dialog.showOpenDialog(mainWindow, {properties: ['openDirectory']});
+        return filePaths[0] || null;
+    },
+
+    selectSendFile: async () => {
+        const {filePaths} = await dialog.showOpenDialog(mainWindow, {properties: ['openFile']});
+        if (filePaths.length > 0) {
+            const s = fs.statSync(filePaths[0]);
+            return {path: filePaths[0], name: path.basename(filePaths[0]), size: s.size};
+        }
+        return null;
+    },
+
+    // ---------------- HRUFT 逻辑 ----------------
+
+    send: (config) => {
+        const {ip, port, filePath, protocol, udtConfig} = config;
+
+        // 1. TCP 模式 (保留原有逻辑作为备用)
+        if (protocol === 'tcp') {
+            FileTransferModule.sendTcp(ip, port, filePath);
+            return;
+        }
+
+        // 2. HRUFT (UDT) 模式
+        const hruft = getHruftPath();
+        const fileName = path.basename(filePath);
+        const transferId = `send-${Date.now()}`;
+
+        // 构造命令行参数 (参考 README)
+        // hruft send <ip> <port> <filepath> [options]
+        const args = ['send', ip, port.toString(), filePath, '--detailed'];
+
+        if (udtConfig) {
+            if (udtConfig.packetSize) args.push('--mss', udtConfig.packetSize.toString());
+            // Window Size (Packets) -> Bytes
+            if (udtConfig.windowSize) {
+                const mss = udtConfig.packetSize || 1400;
+                const windowBytes = udtConfig.windowSize * mss;
+                args.push('--window', windowBytes.toString());
+            }
+            // Bandwidth
+            if (udtConfig.bandwidth && udtConfig.bandwidth > 0) {
+                // 假设 HRUFT 支持此参数，如果不支持请移除
+                // args.push('--bandwidth', udtConfig.bandwidth.toString());
+            }
+        }
+
+        if (mainWindow) {
+            mainWindow.webContents.send('transfer-log', `[CMD] ${hruft.command} ${args.join(' ')}`);
+            // 通知 UI 开始
+            mainWindow.webContents.send('file-send-start', {
+                fileName,
+                fileSize: fs.statSync(filePath).size,
+                md5: '计算中(HRUFT)...'
+            });
+        }
+
+        const child = spawn(hruft.path, args);
+        FileTransferModule.hruftProcesses.set(transferId, child);
+
+        // 处理输出流
+        child.stdout.on('data', (data) => FileTransferModule.parseHruftOutput(data, {mode: 'send', fileName}));
+        child.stderr.on('data', (data) => {
+            if (mainWindow) mainWindow.webContents.send('transfer-log', `[HRUFT Log] ${data}`);
+        });
+
+        child.on('close', (code) => {
+            FileTransferModule.hruftProcesses.delete(transferId);
+            if (code !== 0 && mainWindow) {
+                mainWindow.webContents.send('file-send-error', {error: `进程退出码: ${code}`});
+            }
+        });
+    },
+
+    startServer: (config) => {
+        return new Promise((resolve) => {
+            const { port, savePath, protocol } = config; // 新增 protocol 参数
+            FileTransferModule.currentProtocol = protocol;
+
+            if (protocol === 'hruft') {
+                // HRUFT 接收模式
+                const hruft = getHruftPath();
+                const targetFile = path.join(savePath, `recv_${Date.now()}.bin`);
+                const args = ['recv', port.toString(), targetFile, '--detailed'];
+
+                const child = spawn(hruft.path, args);
+                const pid = `recv-${port}`;
+                FileTransferModule.hruftProcesses.set(pid, child);
+
+                child.stdout.on('data', data =>
+                    FileTransferModule.parseHruftOutput(data, { mode: 'receive', fileName: 'Incoming...' })
+                );
+
+                child.stderr.on('data', data => {
+                    if(mainWindow) mainWindow.webContents.send('transfer-log', `[HRUFT] ${data}`);
+                });
+
+                child.on('close', code => {
+                    FileTransferModule.hruftProcesses.delete(pid);
+                    if (mainWindow) {
+                        mainWindow.webContents.send('transfer-log', `HRUFT 服务已停止 (code: ${code})`);
+                    }
+                });
+
+                resolve(`HRUFT 接收服务已启动\n监听端口: ${port}\n保存路径: ${savePath}`);
+
+            } else {
+                // TCP 接收模式
+                FileTransferModule.startTcpServer(port, savePath);
+                resolve(`TCP 接收服务已启动\n监听端口: ${port}\n保存路径: ${savePath}`);
+            }
+        });
+    },
+
+    stopServer: () => {
+        FileTransferModule.hruftProcesses.forEach(p => {
+            try {
+                p.kill();
+            } catch (e) {
+                console.warn('[FileTransfer] 停止进程失败:', e.message);
+            }
+        });
+        FileTransferModule.hruftProcesses.clear();
+
+        if (FileTransferModule.tcpServer) {
+            try {
+                FileTransferModule.tcpServer.close();
+            } catch (e) {
+                console.warn('[FileTransfer] 停止 TCP 服务失败:', e.message);
+            }
+            FileTransferModule.tcpServer = null;
+        }
+
+        safeSend('transfer-log', '所有传输服务已停止');
+    },
+
+    // TCP 服务端实现 (简化版)
+    startTcpServer: (port, savePath) => {
+        const server = net.createServer(socket => {
+            let fileName = `recv_${Date.now()}.bin`;
+            let fileSize = 0;
+            let received = 0;
+            let metaReceived = false;
+            let writeStream = null;
+
+            socket.on('data', chunk => {
+                if (!metaReceived) {
+                    const str = chunk.toString();
+                    if (str.includes('###END_METADATA###')) {
+                        const parts = str.split('###END_METADATA###');
+                        try {
+                            const meta = JSON.parse(parts[0]);
+                            fileName = meta.fileName || fileName;
+                            fileSize = meta.fileSize || 0;
+                            metaReceived = true;
+
+                            writeStream = fs.createWriteStream(path.join(savePath, fileName));
+
+                            if (mainWindow) {
+                                mainWindow.webContents.send('file-transfer-start', { fileName, fileSize });
+                            }
+
+                            if (parts[1]) {
+                                writeStream.write(parts[1]);
+                                received += Buffer.byteLength(parts[1]);
+                            }
+                        } catch(e) {}
+                    }
+                } else {
+                    writeStream.write(chunk);
+                    received += chunk.length;
+
+                    if (mainWindow) {
+                        mainWindow.webContents.send('file-transfer-progress', {
+                            received,
+                            total: fileSize,
+                            progress: (received / fileSize * 100).toFixed(1),
+                            speed: 0
+                        });
+                    }
+                }
+            });
+
+            socket.on('end', () => {
+                if (writeStream) writeStream.end();
+                if (mainWindow) {
+                    mainWindow.webContents.send('file-transfer-complete', {
+                        fileName,
+                        fileSize: received,
+                        protocol: 'TCP'
+                    });
+                }
+            });
+        });
+
+        server.listen(port, () => {
+            FileTransferModule.tcpServer = server;
+            if (mainWindow) {
+                mainWindow.webContents.send('transfer-log', `TCP 服务端监听端口: ${port}`);
+            }
+        });
+    },
+
+    cancelHruft: (id) => {
+    },
+
+    // ---------------- 辅助函数 ----------------
+
+    parseHruftOutput: (data, context) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return; // 添加检查
+
+        const str = data.toString();
+        const lines = str.split('\n');
+
+        lines.forEach(line => {
+            line = line.trim();
+            if (!line) return;
+
+            if (line.startsWith('{') && line.endsWith('}')) {
+                try {
+                    const json = JSON.parse(line);
+                    FileTransferModule.handleHruftJson(json, context);
+                } catch (e) {
+                    safeSend('transfer-log', `[Raw] ${line}`);
+                }
+            } else {
+                safeSend('transfer-log', `[HRUFT] ${line}`);
+            }
+        });
+    },
+
+    handleHruftJson: (json, context) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return; // 添加检查
+
+        const { mode } = context;
+        const isSend = mode === 'send';
+
+        switch (json.type) {
+            case 'progress':
+                const payload = {
+                    sent: isSend ? json.current : 0,
+                    received: !isSend ? json.current : 0,
+                    total: json.total,
+                    progress: json.percent,
+                    speed: (json.speed_mbps || 0) / 8,
+                    remainingBytes: json.remaining_bytes,
+                    elapsedSeconds: json.elapsed_seconds
+                };
+                safeSend(isSend ? 'file-send-progress' : 'file-transfer-progress', payload);
+                break;
+
+            case 'complete':
+                const completeData = {
+                    fileName: context.fileName,
+                    fileSize: json.total_bytes,
+                    sourceMD5: json.source_md5,
+                    receivedMD5: json.received_md5,
+                    match: json.md5_match,
+                    duration: json.total_time,
+                    protocol: 'HRUFT',
+                    stats: json
+                };
+                safeSend(isSend ? 'file-send-complete' : 'file-transfer-complete', completeData);
+                break;
+
+            case 'error':
+                safeSend(isSend ? 'file-send-error' : 'file-transfer-error', { error: json.message });
+                break;
+        }
+    },
+
+    // ---------------- TCP 备用逻辑 (简化版) ----------------
+    sendTcp: (ip, port, filePath) => {
+        // 简化的 TCP 发送实现，保持原有功能
+        const socket = new net.Socket();
+        const fileName = path.basename(filePath);
+        const fileSize = fs.statSync(filePath).size;
+        let sent = 0;
+
+        socket.connect(port, ip, () => {
+            mainWindow.webContents.send('file-send-start', {fileName, fileSize, md5: 'N/A'});
+            // 发送元数据头
+            const meta = JSON.stringify({fileName, fileSize});
+            socket.write(meta + '\n###END_METADATA###\n');
+
+            const stream = fs.createReadStream(filePath);
+            stream.on('data', chunk => {
+                const ok = socket.write(chunk);
+                sent += chunk.length;
+                if (!ok) stream.pause();
+
+                // 进度通知
+                if (mainWindow) {
+                    mainWindow.webContents.send('file-send-progress', {
+                        sent, total: fileSize, progress: (sent / fileSize * 100).toFixed(1), speed: 0
+                    });
+                }
+            });
+            socket.on('drain', () => stream.resume());
+            stream.on('end', () => {
+                socket.end();
+                if (mainWindow) mainWindow.webContents.send('file-send-complete', {
+                    fileName,
+                    fileSize,
+                    protocol: 'TCP'
+                });
+            });
+        });
+    },
+
+    cleanup: () => {
+        FileTransferModule.stopServer();
+    }
+};

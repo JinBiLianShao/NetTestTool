@@ -6,1365 +6,402 @@
     <title>NetTestTool Pro - 专业网络测试工具</title>
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        /* 自定义样式补充 */
-        .nav-icon, .section-icon, .card-icon, .label-icon, .btn-icon, .stat-icon, .progress-icon {
-            margin-right: 8px;
-        }
-
-        .version-badge {
-            background: var(--accent);
-            color: white;
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 10px;
-            margin-left: 8px;
-        }
-
-        .badge-label {
-            background: rgba(225, 78, 202, 0.2);
-            color: var(--accent);
-            font-size: 11px;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-weight: 500;
-        }
-
-        .config-badge {
-            background: linear-gradient(135deg, var(--success) 0%, #00b894 100%);
-            color: #000;
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 10px;
-            margin-left: 8px;
-        }
-
-        .progress-container {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 20px;
-            margin: 20px 0;
-            box-shadow: var(--shadow);
-        }
-
-        .progress-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-        }
-
-        .progress-title {
-            font-weight: 600;
-            color: var(--text-main);
-            display: flex;
-            align-items: center;
-        }
-
-        .progress-details {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 15px;
-            font-size: 13px;
-            color: var(--text-muted);
-        }
-
-        .detail-item {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
-        .detail-value {
-            color: var(--success);
-            font-weight: 600;
-        }
-
-        .detail-separator {
-            margin: 0 5px;
-            color: var(--text-muted);
-        }
-
-        .hruft-config {
-            background: rgba(15, 52, 96, 0.3);
-            border: 1px dashed var(--border-color);
-            border-radius: 8px;
-            padding: 15px;
-            margin-top: 15px;
-        }
-
-        .config-header {
-            margin-bottom: 15px;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 10px;
-        }
-
-        .config-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-
-        .config-info {
-            background: rgba(0, 242, 195, 0.1);
-            border-left: 3px solid var(--success);
-            padding: 10px;
-            border-radius: 4px;
-            font-size: 12px;
-        }
-
-        .unit-label {
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-left: 4px;
-        }
-
-        .helper-text {
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-top: 4px;
-        }
-
-        .input-with-button {
-            display: flex;
-            gap: 8px;
-        }
-
-        .path-input, .file-input {
-            flex: 1;
-        }
-
-        .btn-icon-btn {
-            background: var(--bg-input);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            color: var(--text-main);
-            padding: 8px 12px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }
-
-        .btn-icon-btn:hover {
-            background: var(--accent);
-            border-color: var(--accent);
-        }
-
-        .info-box {
-            background: rgba(0, 242, 195, 0.1);
-            border-radius: 8px;
-            padding: 10px;
-            margin-top: 15px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .md5-result {
-            padding: 15px;
-            border-radius: 10px;
-            margin: 20px 0;
-            text-align: center;
-            font-weight: 600;
-            font-size: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-        }
-
-        .result-icon {
-            font-size: 20px;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 40px 20px;
-            color: var(--text-muted);
-        }
-
-        .empty-icon {
-            font-size: 48px;
-            margin-bottom: 15px;
-            opacity: 0.5;
-        }
-
-        .empty-text {
-            font-size: 16px;
-            font-weight: 500;
-            margin-bottom: 8px;
-        }
-
-        .empty-subtext {
-            font-size: 13px;
-            opacity: 0.7;
-        }
-
-        .welcome-message {
-            padding: 20px;
-            text-align: center;
-        }
-
-        .welcome-icon {
-            font-size: 48px;
-            margin-bottom: 15px;
-            opacity: 0.5;
-        }
-
-        .welcome-title {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 10px;
-            color: var(--text-main);
-        }
-
-        .welcome-text {
-            font-size: 14px;
-            color: var(--text-muted);
-            line-height: 1.6;
-            text-align: left;
-        }
-
-        .loading-placeholder {
-            text-align: center;
-            padding: 40px;
-        }
-
-        .loading-spinner {
-            display: inline-block;
-            width: 30px;
-            height: 30px;
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            border-top-color: var(--accent);
-            animation: spin 1s ease-in-out infinite;
-            margin-bottom: 15px;
-        }
-
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
-        }
-
-        .tab-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 25px;
-        }
-
-        .control-section {
-            margin-bottom: 25px;
-        }
-
-        .stats-section {
-            margin: 25px 0;
-        }
-
-        .chart-section {
-            margin: 25px 0;
-        }
-
-        .output-section {
-            margin-top: 25px;
-        }
-
-        .section-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-        }
-
-        .history-table-container {
-            overflow-x: auto;
-            border-radius: 8px;
-            border: 1px solid var(--border-color);
-        }
-
-        .history-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-        }
-
-        .history-table th {
-            background: var(--bg-input);
-            padding: 12px 15px;
-            text-align: left;
-            font-weight: 600;
-            color: var(--text-main);
-            border-bottom: 2px solid var(--border-color);
-        }
-
-        .history-table td {
-            padding: 12px 15px;
-            color: var(--text-main);
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .history-table tr:hover {
-            background: rgba(225, 78, 202, 0.05);
-        }
-
-        .history-footer {
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid var(--border-color);
-            font-size: 13px;
-            color: var(--text-muted);
-        }
-
-        .sidebar-footer {
-            margin-top: auto;
-            padding-top: 20px;
-            border-top: 1px solid var(--border-color);
-            font-size: 12px;
-            color: var(--text-muted);
-        }
-
-        .connection-status {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 10px;
-        }
-
-        .copyright {
-            text-align: center;
-        }
-
-        /* 响应式调整 */
-        @media (max-width: 1024px) {
-            .config-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .transfer-controls {
-                flex-direction: column;
-            }
-
-            .tp-controls {
-                flex-direction: column;
-            }
-        }
-    </style>
 </head>
 <body>
+
 <div class="app-container">
-    <!-- ==================== 侧边栏导航 ==================== -->
-    <div class="sidebar">
-        <div class="brand">
-            <span>🌐 NetTool Pro</span>
-            <span class="version-badge">v1.5</span>
+    <!-- 侧边栏导航 -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <span class="logo-icon">🚀</span>
+                <span class="logo-text">NetTest Pro</span>
+            </div>
+            <div class="version">v1.5.0 <span class="badge badge-hruft">HRUFT</span></div>
         </div>
 
-        <ul class="nav">
-            <li class="active" onclick="showTab('info')">
+        <nav class="nav-menu">
+            <div class="nav-item active" onclick="showTab('info')" data-tab="info">
                 <span class="nav-icon">📊</span>
                 <span class="nav-text">网络信息</span>
-            </li>
-            <li onclick="showTab('scan')">
-                <span class="nav-icon">🔎</span>
-                <span class="nav-text">网段扫描</span>
-            </li>
-            <li onclick="showTab('ping')">
-                <span class="nav-icon">📡</span>
-                <span class="nav-text">Ping 测试</span>
-            </li>
-            <li onclick="showTab('arp')">
-                <span class="nav-icon">📋</span>
-                <span class="nav-text">ARP 表</span>
-            </li>
-            <li onclick="showTab('throughput')">
+            </div>
+            <div class="nav-item" onclick="showTab('ping')" data-tab="ping">
                 <span class="nav-icon">⚡</span>
+                <span class="nav-text">Ping 测试</span>
+            </div>
+            <div class="nav-item" onclick="showTab('scan')" data-tab="scan">
+                <span class="nav-icon">🔍</span>
+                <span class="nav-text">网段扫描</span>
+            </div>
+            <div class="nav-item" onclick="showTab('throughput')" data-tab="throughput">
+                <span class="nav-icon">📈</span>
                 <span class="nav-text">吞吐量测试</span>
-            </li>
-            <li onclick="showTab('transfer')">
-                <span class="nav-icon">📁</span>
+            </div>
+            <div class="nav-item" onclick="showTab('transfer')" data-tab="transfer">
+                <span class="nav-icon">📂</span>
                 <span class="nav-text">文件传输</span>
-                <span class="nav-badge" id="transfer-badge" style="display: none;">!</span>
-            </li>
-        </ul>
+            </div>
+        </nav>
 
         <div class="sidebar-footer">
-            <div class="connection-status">
-                <div class="status-indicator active"></div>
-                <span>已连接</span>
-            </div>
-            <div class="copyright">
-                © 2024 NetTestTool Pro
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span class="status-text">系统就绪</span>
             </div>
         </div>
-    </div>
+    </aside>
 
-    <!-- ==================== 主内容区 ==================== -->
-    <div class="main-content">
-        <!-- 1. 网络信息标签页 -->
-        <div id="info" class="tab-pane active">
-            <div class="tab-header">
-                <h2>📊 本机网络环境</h2>
-                <button class="btn-secondary" onclick="NetworkInfoModule.loadInterfaces()">
-                    🔄 刷新接口
+    <!-- 主内容区 -->
+    <main class="content">
+
+        <!-- ===== 网络信息模块 ===== -->
+        <section id="info" class="module-section active">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <span class="title-icon">🌐</span>
+                    系统网络接口
+                </h2>
+                <button class="btn btn-primary" onclick="NetworkInfoModule.loadInterfaces()">
+                    <span>🔄</span> 刷新状态
                 </button>
             </div>
+            <div id="interface-list" class="card-grid"></div>
+        </section>
 
-            <div class="info-grid" id="interface-list">
-                <div class="loading-placeholder">
-                    <div class="loading-spinner"></div>
-                    <p>正在加载网络接口信息...</p>
+        <!-- ===== Ping 测试模块 ===== -->
+        <section id="ping" class="module-section">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <span class="title-icon">⚡</span>
+                    延迟测试 (ICMP Ping)
+                </h2>
+            </div>
+
+            <div class="card config-card">
+                <div class="config-row">
+                    <div class="input-group flex-2">
+                        <label>目标地址</label>
+                        <input type="text" id="ping-target" value="8.8.8.8" placeholder="IP 或域名">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>间隔 (秒)</label>
+                        <input type="number" id="ping-interval" value="1" min="0.1" step="0.1">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>包大小 (字节)</label>
+                        <input type="number" id="ping-size" value="32" min="1" max="65500">
+                    </div>
+                    <button id="btn-ping" class="btn btn-success" onclick="togglePing()">
+                        <span>▶</span> 开始测试
+                    </button>
                 </div>
             </div>
 
-            <div class="info-summary">
-                <h3>📈 网络状态概览</h3>
-                <div class="summary-grid">
-                    <div class="summary-card">
-                        <div class="summary-icon">🌐</div>
-                        <div class="summary-content">
-                            <div class="summary-label">活动接口</div>
-                            <div class="summary-value" id="active-interfaces">0</div>
-                        </div>
-                    </div>
-                    <div class="summary-card">
-                        <div class="summary-icon">📶</div>
-                        <div class="summary-content">
-                            <div class="summary-label">外网连接</div>
-                            <div class="summary-value" id="external-connection">检测中...</div>
-                        </div>
-                    </div>
-                    <div class="summary-card">
-                        <div class="summary-icon">🖧</div>
-                        <div class="summary-content">
-                            <div class="summary-label">局域网段</div>
-                            <div class="summary-value" id="network-segment">--</div>
-                        </div>
+            <div class="chart-card">
+                <div class="chart-header">
+                    <h3>实时延迟图表</h3>
+                    <div class="chart-stats">
+                        <span id="ping-avg">平均: - ms</span>
+                        <span id="ping-min">最小: - ms</span>
+                        <span id="ping-max">最大: - ms</span>
                     </div>
                 </div>
-            </div>
-        </div>
-
-        <!-- 2. 网段扫描标签页 -->
-        <div id="scan" class="tab-pane">
-            <div class="tab-header">
-                <h2>🔎 网段扫描 (局域网设备发现)</h2>
-                <button class="btn-secondary" onclick="exportDeviceList()">
-                    📋 导出列表
-                </button>
-            </div>
-
-            <div class="control-section">
-                <div class="control-bar">
-                    <div class="input-group-row">
-                        <div class="form-control">
-                            <label for="scan-interface">
-                                <span class="label-icon">🌐</span>
-                                选择网络接口
-                            </label>
-                            <select id="scan-interface" class="styled-select">
-                                <option value="">加载中...</option>
-                            </select>
-                        </div>
-                        <div class="form-control">
-                            <label for="scan-timeout">
-                                <span class="label-icon">⏱️</span>
-                                超时时间 (ms)
-                            </label>
-                            <input type="number" id="scan-timeout" value="500" min="100" max="5000" step="100">
-                        </div>
-                        <button class="btn-primary" id="btn-scan" onclick="toggleScan()">
-                            <span class="btn-icon">🚀</span>
-                            开始扫描
-                        </button>
-                    </div>
-
-                    <div class="scan-tips">
-                        <div class="tip-icon">💡</div>
-                        <div class="tip-content">
-                            提示：扫描将检测当前网段内的所有在线设备，显示IP、MAC地址、厂商信息和响应时间
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 扫描进度条 -->
-            <div id="scan-progress" class="progress-container" style="display: none;">
-                <div class="progress-info">
-                    <span id="scan-progress-text">准备扫描...</span>
-                    <span id="scan-progress-percent">0%</span>
-                </div>
-                <div class="progress-bar-container">
-                    <div id="scan-progress-bar" class="progress-bar"></div>
-                </div>
-                <div class="progress-stats">
-                    <div class="progress-stat">
-                        <span class="stat-label">已扫描</span>
-                        <span class="stat-value" id="scan-current">0</span>
-                    </div>
-                    <div class="progress-stat">
-                        <span class="stat-label">总数</span>
-                        <span class="stat-value" id="scan-total">0</span>
-                    </div>
-                    <div class="progress-stat">
-                        <span class="stat-label">在线设备</span>
-                        <span class="stat-value" id="scan-found">0</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 扫描统计 -->
-            <div class="stats-section">
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-icon">🔍</div>
-                        <div class="stat-label">扫描总数</div>
-                        <div class="stat-value" id="scan-total-stat">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">📊</div>
-                        <div class="stat-label">已扫描</div>
-                        <div class="stat-value" id="scan-current-stat">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">✅</div>
-                        <div class="stat-label">在线设备</div>
-                        <div class="stat-value" id="scan-found-stat">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">⚡</div>
-                        <div class="stat-label">扫描状态</div>
-                        <div class="stat-value" id="scan-status-text">就绪</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 设备列表 -->
-            <div class="device-section">
-                <div class="section-header">
-                    <h3>
-                        <span class="section-icon">📱</span>
-                        发现的设备 (<span id="device-count">0</span>)
-                    </h3>
-                    <div class="header-actions">
-                        <button class="btn-secondary" onclick="exportDeviceList()">
-                            <span class="btn-icon">📋</span>
-                            导出 CSV
-                        </button>
-                        <button class="btn-secondary" onclick="clearDeviceList()">
-                            <span class="btn-icon">🗑️</span>
-                            清空列表
-                        </button>
-                    </div>
-                </div>
-
-                <div class="device-table-container">
-                    <table class="device-table">
-                        <thead>
-                        <tr>
-                            <th style="width: 50px;">
-                                <span class="table-header">#</span>
-                            </th>
-                            <th style="width: 160px;">
-                                <span class="table-header">IP地址</span>
-                            </th>
-                            <th style="width: 160px;">
-                                <span class="table-header">MAC地址</span>
-                            </th>
-                            <th>
-                                <span class="table-header">厂商信息</span>
-                            </th>
-                            <th style="width: 120px;">
-                                <span class="table-header">响应时间</span>
-                            </th>
-                            <th style="width: 140px;">
-                                <span class="table-header">操作</span>
-                            </th>
-                        </tr>
-                        </thead>
-                        <tbody id="device-list">
-                        <tr class="empty-row">
-                            <td colspan="6">
-                                <div class="empty-state">
-                                    <div class="empty-icon">🔍</div>
-                                    <div class="empty-text">点击"开始扫描"发现局域网设备</div>
-                                    <div class="empty-subtext">将扫描选中的网络接口所在网段</div>
-                                </div>
-                            </td>
-                        </tr>
-                        </tbody>
-                    </table>
-                </div>
-
-                <div class="table-footer">
-                    <div class="pagination-info">
-                        显示 <span id="device-showing">0</span> 个设备
-                    </div>
-                    <div class="last-update">
-                        最后更新: <span id="last-scan-time">--</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 3. Ping测试标签页 -->
-        <div id="ping" class="tab-pane">
-            <div class="tab-header">
-                <h2>📡 ICMP / Ping 测试</h2>
-                <div class="header-badge">
-                    <span class="badge-label">实时图表</span>
-                </div>
-            </div>
-
-            <div class="control-section">
-                <div class="control-bar">
-                    <div class="input-group-row">
-                        <div class="form-control">
-                            <label for="ping-target">
-                                <span class="label-icon">🎯</span>
-                                目标地址 (IP/域名)
-                            </label>
-                            <input type="text" id="ping-target" value="127.0.0.1"
-                                   placeholder="如 127.0.0.1 或 google.com">
-                        </div>
-                        <div class="form-control">
-                            <label for="ping-interval">
-                                <span class="label-icon">⏱️</span>
-                                间隔 (秒)
-                            </label>
-                            <input type="number" id="ping-interval" value="1" min="0.1" max="60" step="0.1"
-                                   placeholder="0.1 ~ 60">
-                        </div>
-                        <div class="form-control">
-                            <label for="ping-size">
-                                <span class="label-icon">📦</span>
-                                包大小 (字节)
-                            </label>
-                            <input type="number" id="ping-size" value="32" min="1" max="65500"
-                                   placeholder="1 ~ 65500">
-                        </div>
-                        <button class="btn-primary" onclick="togglePing()" id="ping-button">
-                            <span class="btn-icon">🚀</span>
-                            开始 Ping
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Ping统计 -->
-            <div class="stats-section">
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-icon">📤</div>
-                        <div class="stat-label">已发送</div>
-                        <div class="stat-value" id="ping-sent">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">📥</div>
-                        <div class="stat-label">已接收</div>
-                        <div class="stat-value" id="ping-received">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">📉</div>
-                        <div class="stat-label">丢包率</div>
-                        <div class="stat-value" id="ping-loss">0%</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">⚡</div>
-                        <div class="stat-label">平均延迟</div>
-                        <div class="stat-value" id="ping-avg">0ms</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Ping图表 -->
-            <div class="chart-section">
                 <div class="chart-container">
                     <canvas id="pingChart"></canvas>
                 </div>
-                <div class="chart-controls">
-                    <button class="btn-secondary" onclick="resetPingChart()">
-                        <span class="btn-icon">🔄</span>
-                        重置图表
-                    </button>
-                    <div class="chart-info">
-                        显示最近 <span id="ping-points-count">0</span> 个数据点
-                    </div>
-                </div>
             </div>
 
-            <!-- Ping输出 -->
-            <div class="output-section">
-                <div class="section-header">
-                    <h3>
-                        <span class="section-icon">📝</span>
-                        Ping输出日志
-                    </h3>
-                    <button class="btn-secondary" onclick="clearPingOutput()">
-                        <span class="btn-icon">🗑️</span>
-                        清空日志
-                    </button>
+            <div class="console-card">
+                <div class="console-header">
+                    <span>📄 日志输出</span>
+                    <button class="btn-icon" onclick="clearConsole('ping-output')">清空</button>
                 </div>
-                <div class="console-output" id="ping-output">
-                    <div class="welcome-message">
-                        <div class="welcome-icon">👋</div>
-                        <div class="welcome-content">
-                            <div class="welcome-title">欢迎使用 Ping 测试</div>
-                            <div class="welcome-text">
-                                输入目标地址后点击"开始 Ping"进行测试。<br>
-                                支持 IP 地址和域名，可自定义包大小和间隔时间。
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                <div class="console-output" id="ping-output"></div>
             </div>
-        </div>
+        </section>
 
-        <!-- 4. ARP表标签页 -->
-        <div id="arp" class="tab-pane">
-            <div class="tab-header">
-                <h2>📋 ARP 缓存表</h2>
-                <div class="header-badge">
-                    <span class="badge-label">系统信息</span>
-                </div>
+        <!-- ===== 网段扫描模块 ===== -->
+        <section id="scan" class="module-section">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <span class="title-icon">🔍</span>
+                    在线设备扫描
+                </h2>
             </div>
 
-            <div class="control-section">
-                <div class="control-bar">
-                    <div class="input-group-row">
-                        <div class="form-control">
-                            <label for="arp-interface">
-                                <span class="label-icon">🌐</span>
-                                选择接口
-                            </label>
-                            <select id="arp-interface" class="styled-select">
-                                <option value="all">所有接口</option>
-                            </select>
-                        </div>
-                        <button class="btn-primary" onclick="refreshArp()">
-                            <span class="btn-icon">🔄</span>
-                            刷新 ARP 表
-                        </button>
-                        <button class="btn-secondary" onclick="clearArpCache()">
-                            <span class="btn-icon">🗑️</span>
-                            清空缓存
-                        </button>
+            <div class="card config-card">
+                <div class="config-row">
+                    <div class="input-group flex-2">
+                        <label>扫描网段</label>
+                        <select id="scan-interface"></select>
                     </div>
-                </div>
-            </div>
-
-            <!-- ARP输出 -->
-            <div class="output-section">
-                <div class="section-header">
-                    <h3>
-                        <span class="section-icon">📋</span>
-                        ARP 表内容
-                    </h3>
-                    <div class="header-badge">
-                        <span class="badge" id="arp-count">0 条记录</span>
+                    <div class="input-group flex-1">
+                        <label>超时 (ms)</label>
+                        <input type="number" id="scan-timeout" value="200" min="50" max="5000">
                     </div>
-                </div>
-                <div class="arp-output-container">
-                    <div class="console-output" id="arp-output">
-                        <div class="loading-placeholder">
-                            <div class="loading-spinner"></div>
-                            <p>正在获取 ARP 表信息...</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="arp-info">
-                <div class="info-card">
-                    <div class="info-icon">💡</div>
-                    <div class="info-content">
-                        <div class="info-title">ARP 表说明</div>
-                        <div class="info-text">
-                            ARP（地址解析协议）表存储了IP地址到MAC地址的映射关系。<br>
-                            当计算机需要与局域网内的其他设备通信时，会使用ARP表来查找目标设备的MAC地址。
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 5. 吞吐量测试标签页 -->
-        <div id="throughput" class="tab-pane">
-            <div class="tab-header">
-                <h2>⚡ TCP/UDP 吞吐量测试</h2>
-                <div class="header-badge">
-                    <span class="badge-label">带宽测试</span>
-                </div>
-            </div>
-
-            <div class="throughput-controls">
-                <!-- 接收端 -->
-                <div class="tp-section">
-                    <div class="tp-card">
-                        <div class="card-header">
-                            <h3>
-                                <span class="card-icon">🔵</span>
-                                接收端 (Server)
-                            </h3>
-                            <span class="card-badge">服务端</span>
-                        </div>
-
-                        <div class="card-content">
-                            <div class="form-group">
-                                <label for="tp-server-protocol">
-                                    <span class="label-icon">📡</span>
-                                    选择协议
-                                </label>
-                                <select id="tp-server-protocol" class="styled-select">
-                                    <option value="tcp">TCP</option>
-                                    <option value="udp">UDP</option>
-                                </select>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="tp-server-port">
-                                    <span class="label-icon">🔢</span>
-                                    监听端口
-                                </label>
-                                <input type="number" id="tp-server-port" value="5201" min="1024" max="65535">
-                            </div>
-
-                            <div class="action-group">
-                                <button class="btn-primary" onclick="startServer()">
-                                    <span class="btn-icon">🚀</span>
-                                    启动服务
-                                </button>
-                                <button class="btn-secondary" onclick="stopServer()">
-                                    <span class="btn-icon">⏹️</span>
-                                    停止
-                                </button>
-                            </div>
-
-                            <div class="status-display">
-                                <div class="status-indicator inactive"></div>
-                                <span id="server-status-text">未启动</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 发送端 -->
-                <div class="tp-section">
-                    <div class="tp-card">
-                        <div class="card-header">
-                            <h3>
-                                <span class="card-icon">🟢</span>
-                                发送端 (Client)
-                            </h3>
-                            <span class="card-badge">客户端</span>
-                        </div>
-
-                        <div class="card-content">
-                            <div class="form-group">
-                                <label for="tp-ip">
-                                    <span class="label-icon">🌐</span>
-                                    服务端 IP
-                                </label>
-                                <input type="text" id="tp-ip" placeholder="如 192.168.1.1" value="127.0.0.1">
-                            </div>
-
-                            <div class="form-group">
-                                <label for="tp-client-protocol">
-                                    <span class="label-icon">📡</span>
-                                    选择协议
-                                </label>
-                                <select id="tp-client-protocol" class="styled-select" onchange="toggleUdpConfig()">
-                                    <option value="tcp">TCP</option>
-                                    <option value="udp">UDP</option>
-                                </select>
-                            </div>
-
-                            <!-- UDP配置 -->
-                            <div id="udp-config" class="udp-config" style="display: none;">
-                                <div class="config-header">
-                                    <h4>
-                                        <span class="config-icon">⚙️</span>
-                                        UDP 模式配置
-                                    </h4>
-                                </div>
-                                <div class="config-grid">
-                                    <div class="form-group">
-                                        <label for="tp-udp-bandwidth">
-                                            目标带宽 (Mbps)
-                                        </label>
-                                        <input type="number" id="tp-udp-bandwidth" value="10" min="1"
-                                               placeholder="目标发送速率">
-                                    </div>
-                                    <div class="form-group">
-                                        <label for="tp-udp-size">
-                                            数据包大小 (字节)
-                                        </label>
-                                        <input type="number" id="tp-udp-size" value="1470" min="1"
-                                               placeholder="建议 1470 (以太网 MTU-IP头-UDP头)">
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="action-group">
-                                <button class="btn-primary" id="btn-tp-client" onclick="toggleClient()">
-                                    <span class="btn-icon">🚀</span>
-                                    开始测试
-                                </button>
-                                <button class="btn-secondary" onclick="stopClient()">
-                                    <span class="btn-icon">⏹️</span>
-                                    停止
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 吞吐量统计 -->
-            <div class="stats-section">
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-icon">📈</div>
-                        <div class="stat-label">当前速率</div>
-                        <div class="stat-value" id="current-speed">0 Mbps</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">📊</div>
-                        <div class="stat-label">平均速率</div>
-                        <div class="stat-value" id="avg-speed">0 Mbps</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">🚀</div>
-                        <div class="stat-label">峰值速率</div>
-                        <div class="stat-value" id="peak-speed">0 Mbps</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">⏱️</div>
-                        <div class="stat-label">传输时长</div>
-                        <div class="stat-value" id="test-duration">0s</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 吞吐量图表 -->
-            <div class="chart-section">
-                <div class="chart-container">
-                    <canvas id="speedChart"></canvas>
-                </div>
-                <div class="chart-controls">
-                    <button class="btn-secondary" onclick="resetSpeedChart()">
-                        <span class="btn-icon">🔄</span>
-                        重置图表
-                    </button>
-                    <div class="chart-info">
-                        实时带宽监测 - 5秒滑动平均
-                    </div>
-                </div>
-            </div>
-
-            <!-- 吞吐量输出日志 -->
-            <div class="output-section">
-                <div class="section-header">
-                    <h3>
-                        <span class="section-icon">📝</span>
-                        测试日志
-                    </h3>
-                    <button class="btn-secondary" onclick="clearTpLog()">
-                        <span class="btn-icon">🗑️</span>
-                        清空日志
+                    <button id="btn-scan" class="btn btn-success" onclick="toggleScan()">
+                        <span>🔎</span> 开始扫描
                     </button>
                 </div>
-                <div class="console-output" id="tp-log-output">
-                    <div class="welcome-message">
-                        <div class="welcome-icon">📊</div>
-                        <div class="welcome-content">
-                            <div class="welcome-title">吞吐量测试说明</div>
-                            <div class="welcome-text">
-                                1. 首先启动接收端服务<br>
-                                2. 在发送端输入接收端IP地址<br>
-                                3. 选择协议类型（TCP/UDP）<br>
-                                4. 点击"开始测试"进行带宽测试
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 6. 文件传输标签页 (集成HRUFT) -->
-        <div id="transfer" class="tab-pane">
-            <div class="tab-header">
-                <h2>📁 局域网文件传输</h2>
-                <div class="header-badge">
-                    <span class="badge-label">HRUFT 引擎</span>
-                </div>
             </div>
 
-            <div class="transfer-controls">
-                <!-- 接收端 -->
-                <div class="transfer-section">
-                    <div class="transfer-card">
-                        <div class="card-header">
-                            <h3>
-                                <span class="card-icon">📥</span>
-                                接收端 (Server)
-                            </h3>
-                            <span class="card-badge">接收文件</span>
-                        </div>
-
-                        <div class="card-content">
-                            <div class="form-group">
-                                <label for="transfer-save-path">
-                                    <span class="label-icon">📂</span>
-                                    保存路径
-                                </label>
-                                <div class="input-with-button">
-                                    <input type="text" id="transfer-save-path" readonly
-                                           placeholder="点击选择保存目录" class="path-input">
-                                    <button class="btn-icon-btn" onclick="selectSavePath()" title="浏览">
-                                        📂
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="transfer-port">
-                                    <span class="label-icon">🔢</span>
-                                    监听端口
-                                </label>
-                                <input type="number" id="transfer-port" value="5202" min="1024" max="65535">
-                            </div>
-
-                            <div class="action-group">
-                                <button class="btn-primary" onclick="startTransferServer()">
-                                    <span class="btn-icon">🚀</span>
-                                    启动接收服务
-                                </button>
-                                <button class="btn-secondary" onclick="stopTransferServer()">
-                                    <span class="btn-icon">⏹️</span>
-                                    停止服务
-                                </button>
-                            </div>
-
-                            <div class="status-display">
-                                <div class="status-indicator inactive"></div>
-                                <span id="transfer-server-status-text">未启动</span>
-                            </div>
-
-                            <div class="info-box">
-                                <div class="info-icon">💡</div>
-                                <div class="info-content">
-                                    接收服务将同时支持 TCP 和 HRUFT 协议
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 发送端 -->
-                <div class="transfer-section">
-                    <div class="transfer-card">
-                        <div class="card-header">
-                            <h3>
-                                <span class="card-icon">📤</span>
-                                发送端 (Client)
-                            </h3>
-                            <span class="card-badge">发送文件</span>
-                        </div>
-
-                        <div class="card-content">
-                            <div class="form-group">
-                                <label for="transfer-target-ip">
-                                    <span class="label-icon">🌐</span>
-                                    目标 IP
-                                </label>
-                                <input type="text" id="transfer-target-ip" placeholder="如 192.168.1.1"
-                                       value="127.0.0.1">
-                            </div>
-
-                            <div class="form-group">
-                                <label for="transfer-protocol">
-                                    <span class="label-icon">📡</span>
-                                    传输协议
-                                </label>
-                                <select id="transfer-protocol" class="styled-select" onchange="toggleUdtConfig()">
-                                    <option value="tcp">TCP (默认)</option>
-                                    <option value="udt">HRUFT (可靠UDP)</option>
-                                </select>
-                            </div>
-
-                            <!-- HRUFT配置区域 -->
-                            <div id="udt-config" class="hruft-config" style="display: none;">
-                                <div class="config-header">
-                                    <h4>
-                                        <span class="config-icon">⚡</span>
-                                        HRUFT 协议配置
-                                        <span class="config-badge">高性能</span>
-                                    </h4>
-                                </div>
-
-                                <div class="config-grid">
-                                    <div class="form-group">
-                                        <label for="udt-window-size">
-                                            滑动窗口大小
-                                            <span class="unit-label">(包数)</span>
-                                        </label>
-                                        <input type="number" id="udt-window-size" value="32" min="1" max="256">
-                                        <div class="helper-text">高延迟网络建议增大</div>
-                                    </div>
-                                    <div class="form-group">
-                                        <label for="udt-packet-size">
-                                            数据包大小
-                                            <span class="unit-label">(字节)</span>
-                                        </label>
-                                        <input type="number" id="udt-packet-size" value="1400" min="100" max="65500">
-                                        <div class="helper-text">建议: 1024-1500</div>
-                                    </div>
-                                    <div class="form-group">
-                                        <label for="udt-bandwidth">
-                                            目标带宽
-                                            <span class="unit-label">(Mbps)</span>
-                                        </label>
-                                        <input type="number" id="udt-bandwidth" value="100" min="1" max="10000">
-                                        <div class="helper-text">0 = 无限制</div>
-                                    </div>
-                                    <div class="form-group">
-                                        <label for="udt-buffer">
-                                            缓冲区大小
-                                            <span class="unit-label">(MB)</span>
-                                        </label>
-                                        <input type="number" id="udt-buffer" value="16" min="1" max="256">
-                                        <div class="helper-text">传输缓冲区</div>
-                                    </div>
-                                </div>
-
-                                <div class="config-info">
-                                    <div class="info-icon">🚀</div>
-                                    <div class="info-content">
-                                        <strong>HRUFT 特性:</strong> 基于UDP的可靠传输 • 自适应拥塞控制 •
-                                        端到端MD5校验<br>
-                                        <small>适用于高延迟网络和大文件传输。窗口大小 = 带宽 × RTT</small>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="form-group">
-                                <label>
-                                    <span class="label-icon">📎</span>
-                                    选择文件
-                                </label>
-                                <div class="input-with-button">
-                                    <input type="text" id="transfer-file-display" readonly
-                                           placeholder="点击选择文件" class="file-input">
-                                    <button class="btn-icon-btn" onclick="triggerFileSelect()" title="浏览">
-                                        📎
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div class="action-group">
-                                <button class="btn-primary" id="btn-send-file" onclick="sendFile()">
-                                    <span class="btn-icon">🚀</span>
-                                    发送文件
-                                </button>
-                                <button class="btn-secondary" onclick="cancelTransfer()">
-                                    <span class="btn-icon">❌</span>
-                                    取消
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 传输进度 -->
-            <div id="transfer-progress" class="progress-container" style="display: none;">
-                <div class="progress-header">
-                    <div class="progress-title">
-                        <span class="progress-icon">📁</span>
-                        文件传输进度
-                    </div>
-                    <div class="progress-actions">
-                        <button class="btn-icon-btn" onclick="pauseTransfer()" title="暂停">
-                            ⏸️
-                        </button>
-                        <button class="btn-icon-btn" onclick="cancelTransfer()" title="取消">
-                            ❌
-                        </button>
-                    </div>
-                </div>
-
+            <div id="scan-progress" class="progress-card" style="display:none">
                 <div class="progress-info">
-                    <span id="transfer-progress-text">准备传输...</span>
-                    <span id="transfer-progress-percent">0%</span>
+                    <span id="scan-progress-text">初始化中...</span>
+                    <span id="scan-progress-percent">0%</span>
                 </div>
-
-                <div class="progress-bar-container">
-                    <div id="transfer-progress-bar" class="progress-bar"></div>
-                </div>
-
-                <div class="progress-details">
-                    <div class="detail-item">
-                        <span class="detail-label">速度:</span>
-                        <span class="detail-value" id="transfer-speed">0 MB/s</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">已传输:</span>
-                        <span class="detail-value" id="transfer-bytes">0 MB</span>
-                        <span class="detail-separator">/</span>
-                        <span class="detail-value" id="transfer-total">0 MB</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">剩余时间:</span>
-                        <span class="detail-value" id="transfer-eta">--:--</span>
-                    </div>
-                </div>
-
-                <div class="progress-stats">
-                    <div class="progress-stat">
-                        <span class="stat-label">协议</span>
-                        <span class="stat-value" id="transfer-protocol-type">--</span>
-                    </div>
-                    <div class="progress-stat">
-                        <span class="stat-label">窗口</span>
-                        <span class="stat-value" id="transfer-window">--</span>
-                    </div>
-                    <div class="progress-stat">
-                        <span class="stat-label">RTT</span>
-                        <span class="stat-value" id="transfer-rtt">-- ms</span>
-                    </div>
+                <div class="progress-bar-bg">
+                    <div id="scan-progress-bar" class="progress-bar-fill"></div>
                 </div>
             </div>
 
-            <!-- 文件信息统计 -->
-            <div class="stats-section">
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-icon">📄</div>
-                        <div class="stat-label">当前文件</div>
-                        <div class="stat-value" id="current-file" style="font-size: 14px; word-break: break-all;">--
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">📊</div>
-                        <div class="stat-label">文件大小</div>
-                        <div class="stat-value" id="file-size">0 MB</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">🔒</div>
-                        <div class="stat-label">源文件 MD5</div>
-                        <div class="stat-value" id="source-md5"
-                             style="font-size: 12px; font-family: 'Consolas', monospace;">--
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">🔐</div>
-                        <div class="stat-label">接收文件 MD5</div>
-                        <div class="stat-value" id="received-md5"
-                             style="font-size: 12px; font-family: 'Consolas', monospace;">--
-                        </div>
-                    </div>
+            <div class="table-card">
+                <div class="table-header">
+                    <h3>发现的设备</h3>
+                    <span id="device-count" class="badge">0 台</span>
                 </div>
-            </div>
-
-            <!-- MD5校验结果 -->
-            <div id="md5-result" class="md5-result" style="display: none;">
-                <div class="result-icon"></div>
-                <div class="result-text"></div>
-            </div>
-
-            <!-- 传输历史 -->
-            <div class="history-section">
-                <div class="section-header">
-                    <h3>
-                        <span class="section-icon">📚</span>
-                        传输历史 (<span id="transfer-history-count">0</span>)
-                    </h3>
-                    <div class="header-actions">
-                        <button class="btn-secondary" onclick="exportTransferHistory()">
-                            <span class="btn-icon">📋</span>
-                            导出历史
-                        </button>
-                        <button class="btn-secondary" onclick="clearTransferHistory()">
-                            <span class="btn-icon">🗑️</span>
-                            清空历史
-                        </button>
-                    </div>
-                </div>
-
-                <div class="history-table-container">
-                    <table class="history-table">
+                <div class="table-container">
+                    <table class="data-table">
                         <thead>
                         <tr>
-                            <th style="width: 50px;">#</th>
-                            <th style="width: 80px;">类型</th>
-                            <th>文件名</th>
-                            <th style="width: 100px;">大小</th>
-                            <th style="width: 150px;">对方IP</th>
-                            <th style="width: 80px;">协议</th>
-                            <th style="width: 100px;">耗时</th>
-                            <th style="width: 80px;">状态</th>
-                            <th style="width: 120px;">时间</th>
-                            <th style="width: 60px;">操作</th>
+                            <th>IP 地址</th>
+                            <th>MAC 地址</th>
+                            <th>厂商 (OUI)</th>
+                            <th>响应时间</th>
+                            <th>操作</th>
                         </tr>
                         </thead>
-                        <tbody id="transfer-history">
-                        <tr class="empty-row">
-                            <td colspan="10">
-                                <div class="empty-state">
-                                    <div class="empty-icon">📁</div>
-                                    <div class="empty-text">暂无传输记录</div>
-                                    <div class="empty-subtext">开始文件传输后，记录将显示在这里</div>
-                                </div>
-                            </td>
-                        </tr>
-                        </tbody>
+                        <tbody id="device-list"></tbody>
                     </table>
                 </div>
+            </div>
+        </section>
 
-                <div class="history-footer">
-                    <div class="history-stats">
-                        共 <span id="total-transfers">0</span> 次传输，
-                        成功 <span id="successful-transfers">0</span> 次，
-                        失败 <span id="failed-transfers">0</span> 次
-                    </div>
+        <!-- ===== 吞吐量测试模块 (iPerf) ===== -->
+        <section id="throughput" class="module-section">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <span class="title-icon">📈</span>
+                    带宽吞吐量测试 (iPerf)
+                </h2>
+                <div class="mode-switch">
+                    <button class="mode-btn active" onclick="switchTpMode('server')" data-mode="server">
+                        服务端
+                    </button>
+                    <button class="mode-btn" onclick="switchTpMode('client')" data-mode="client">
+                        客户端
+                    </button>
                 </div>
             </div>
 
-            <!-- 传输日志 -->
-            <div class="output-section">
-                <div class="section-header">
-                    <h3>
-                        <span class="section-icon">📝</span>
-                        传输日志
-                    </h3>
-                    <button class="btn-secondary" onclick="clearTransferLog()">
-                        <span class="btn-icon">🗑️</span>
-                        清空日志
+            <!-- 服务端控制 -->
+            <div id="tp-server-controls" class="card config-card">
+                <div class="config-row">
+                    <div class="input-group flex-1">
+                        <label>监听端口</label>
+                        <input type="number" id="tp-server-port" value="5201">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>协议</label>
+                        <select id="tp-server-protocol">
+                            <option value="tcp">TCP</option>
+                            <option value="udp">UDP</option>
+                        </select>
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>iPerf 版本</label>
+                        <select id="tp-server-version">
+                            <option value="iperf3">iPerf 3</option>
+                            <option value="iperf2">iPerf 2</option>
+                        </select>
+                    </div>
+                    <button id="btn-tp-server" class="btn btn-success" onclick="toggleTpServer()">
+                        <span>🎯</span> 启动服务
                     </button>
                 </div>
-                <div class="console-output" id="transfer-log-output">
-                    <div class="welcome-message">
-                        <div class="welcome-icon">🚀</div>
-                        <div class="welcome-content">
-                            <div class="welcome-title">文件传输说明</div>
-                            <div class="welcome-text">
-                                <strong>TCP 模式:</strong> 标准TCP传输，稳定可靠<br>
-                                <strong>HRUFT 模式:</strong> 基于UDP的高性能可靠传输，适合高延迟网络和大文件<br>
-                                <br>
-                                使用步骤:<br>
-                                1. 接收端启动服务并选择保存路径<br>
-                                2. 发送端选择目标IP和传输协议<br>
-                                3. 选择要发送的文件<br>
-                                4. 开始传输
-                            </div>
+            </div>
+
+            <!-- 客户端控制 -->
+            <div id="tp-client-controls" class="card config-card" style="display:none">
+                <div class="config-row">
+                    <div class="input-group flex-2">
+                        <label>目标服务器</label>
+                        <input type="text" id="tp-client-ip" placeholder="192.168.x.x">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>端口</label>
+                        <input type="number" id="tp-client-port" value="5201">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>协议</label>
+                        <select id="tp-client-protocol">
+                            <option value="tcp">TCP</option>
+                            <option value="udp">UDP</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="config-row">
+                    <div class="input-group flex-1">
+                        <label>测试时长 (秒)</label>
+                        <input type="number" id="tp-client-duration" value="10" min="1">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>带宽 (Mbps, UDP)</label>
+                        <input type="number" id="tp-client-bandwidth" value="100">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>iPerf 版本</label>
+                        <select id="tp-client-version">
+                            <option value="iperf3">iPerf 3</option>
+                            <option value="iperf2">iPerf 2</option>
+                        </select>
+                    </div>
+                    <button id="btn-tp-client" class="btn btn-success" onclick="toggleTpClient()">
+                        <span>🚀</span> 开始测试
+                    </button>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <h3>实时吞吐量</h3>
+                    <div class="chart-stats">
+                        <span id="tp-current">当前: 0 Mbps</span>
+                        <span id="tp-avg">平均: 0 Mbps</span>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="tpChart"></canvas>
+                </div>
+            </div>
+
+            <div class="console-card">
+                <div class="console-header">
+                    <span>📄 iPerf 输出</span>
+                    <button class="btn-icon" onclick="clearConsole('tp-log')">清空</button>
+                </div>
+                <div class="console-output" id="tp-log"></div>
+            </div>
+        </section>
+
+        <!-- ===== 文件传输模块 (HRUFT) ===== -->
+        <section id="transfer" class="module-section">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <span class="title-icon">📂</span>
+                    高性能文件传输
+                </h2>
+                <div class="mode-switch">
+                    <button class="mode-btn active" onclick="switchTransferMode('send')" data-mode="send">
+                        发送文件
+                    </button>
+                    <button class="mode-btn" onclick="switchTransferMode('receive')" data-mode="receive">
+                        接收文件
+                    </button>
+                </div>
+            </div>
+
+            <!-- 发送端控制 -->
+            <div id="send-controls" class="card config-card">
+                <div class="config-row">
+                    <div class="input-group flex-2">
+                        <label>目标 IP 地址</label>
+                        <input type="text" id="transfer-target-ip" placeholder="192.168.x.x">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>端口</label>
+                        <input type="number" id="transfer-target-port" value="5202">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>传输协议</label>
+                        <select id="transfer-protocol" onchange="toggleUdtConfig()">
+                            <option value="hruft">HRUFT (UDP)</option>
+                            <option value="tcp">标准 TCP</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="udt-config" class="sub-config">
+                    <h4>HRUFT 高级配置</h4>
+                    <div class="config-row">
+                        <div class="input-group">
+                            <label>MSS (报文大小)</label>
+                            <input type="number" id="udt-packet-size" value="1400" min="512" max="9000">
+                        </div>
+                        <div class="input-group">
+                            <label>窗口大小 (MB)</label>
+                            <input type="number" id="udt-window-size" value="1" min="1" max="100">
                         </div>
                     </div>
                 </div>
+
+                <div class="file-selector">
+                    <input type="text" id="transfer-file-display" readonly placeholder="请选择要发送的文件...">
+                    <button class="btn btn-secondary" onclick="triggerFileSelect()">
+                        📁 选择文件
+                    </button>
+                </div>
+
+                <div class="action-bar">
+                    <button class="btn btn-success btn-large" onclick="sendFile()">
+                        🚀 立即发送
+                    </button>
+                </div>
             </div>
-        </div>
-    </div>
+
+            <!-- 接收端控制 -->
+            <div id="receive-controls" class="card config-card" style="display:none">
+                <div class="config-row">
+                    <div class="input-group flex-1">
+                        <label>监听端口</label>
+                        <input type="number" id="transfer-recv-port" value="5202">
+                    </div>
+                    <div class="input-group flex-1">
+                        <label>接收协议</label>
+                        <select id="transfer-recv-protocol">
+                            <option value="hruft">HRUFT (UDP)</option>
+                            <option value="tcp">标准 TCP</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="file-selector">
+                    <input type="text" id="transfer-save-path" readonly placeholder="请选择保存目录...">
+                    <button class="btn btn-secondary" onclick="selectSavePath()">
+                        📁 更改目录
+                    </button>
+                </div>
+                <div class="action-bar">
+                    <button id="btn-recv-server" class="btn btn-success btn-large" onclick="startTransferServer()">
+                        🎯 开启接收服务
+                    </button>
+                </div>
+            </div>
+
+            <!-- 传输进度显示 -->
+            <div id="transfer-progress" class="transfer-status-zone" style="display:none">
+                <div class="status-header">
+                    <span id="transfer-status-text" class="status-text">就绪</span>
+                    <span id="transfer-speed" class="speed-text">0 MB/s</span>
+                </div>
+                <div class="progress-bar-bg">
+                    <div id="transfer-progress-bar" class="progress-bar-fill accent"></div>
+                </div>
+                <div class="status-footer">
+                    <span id="transfer-bytes">0 / 0 MB</span>
+                    <span id="transfer-eta">剩余时间: --</span>
+                </div>
+            </div>
+
+            <div class="console-card mt-20">
+                <div class="console-header">
+                    <span>📄 传输日志</span>
+                    <button class="btn-icon" onclick="clearConsole('transfer-log-output')">清空</button>
+                </div>
+                <div class="console-output" id="transfer-log-output"></div>
+            </div>
+        </section>
+
+    </main>
 </div>
 
 <script src="renderer.js"></script>

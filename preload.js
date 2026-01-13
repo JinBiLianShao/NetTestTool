@@ -1,81 +1,241 @@
+/**
+ * preload.js - NetTestTool Pro 预加载脚本
+ * * 作用：作为渲染进程(前端)与主进程(后端)之间的安全桥梁。
+ * 通过 contextBridge.exposeInMainWorld 将安全的 API 暴露给 window.api 对象。
+ */
+
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
-  // ==================== 网络信息 ====================
+
+  // ========================================================================
+  //                          1. 系统与网络信息模块
+  // ========================================================================
+  /**
+   * 获取本机网络接口列表
+   * @returns {Promise<Array>} 包含 name, ip, netmask, mac 的对象数组
+   */
   getInterfaces: () => ipcRenderer.invoke('net:interfaces'),
 
-  // ==================== Ping测试 ====================
-  startPing: (config) => ipcRenderer.send('net:ping-start', config),
-  stopPing: () => ipcRenderer.send('net:ping-stop'),
-  onPingReply: (callback) => ipcRenderer.on('ping-reply', (_, data) => callback(data)),
-
-  // ==================== ARP表 ====================
+  /**
+   * 获取系统 ARP 表
+   * @returns {Promise<string>} 原始 ARP 命令输出文本
+   */
   getArp: () => ipcRenderer.invoke('net:arp'),
 
-  // ==================== 网段扫描 ====================
+
+  // ========================================================================
+  //                          2. Ping 测试模块
+  // ========================================================================
+  /**
+   * 开始 Ping 测试
+   * @param {Object} config - { target: string, interval: number, size: number }
+   */
+  startPing: (config) => ipcRenderer.send('net:ping-start', config),
+
+  /**
+   * 停止 Ping 测试
+   */
+  stopPing: () => ipcRenderer.send('net:ping-stop'),
+
+  /**
+   * 监听 Ping 回复日志
+   * @param {Function} callback - (text) => void
+   */
+  onPingReply: (callback) => {
+    // 先移除旧的监听器以防重复注册
+    ipcRenderer.removeAllListeners('ping-reply');
+    ipcRenderer.on('ping-reply', (_, text) => callback(text));
+  },
+
+
+  // ========================================================================
+  //                          3. 网段扫描模块
+  // ========================================================================
+  /**
+   * 开始网段扫描
+   * @param {Object} config - { ip: string, timeout: number }
+   */
   startScan: (config) => ipcRenderer.send('net:scan-start', config),
+
+  /**
+   * 停止网段扫描
+   */
   stopScan: () => ipcRenderer.send('net:scan-stop'),
-  onScanStatus: (callback) => ipcRenderer.on('scan-status', (_, data) => callback(data)),
-  onScanDeviceFound: (callback) => ipcRenderer.on('scan-device-found', (_, device) => callback(device)),
 
-  // ==================== 吞吐量测试 ====================
+  /**
+   * 监听扫描总体状态更新 (进度、完成、错误)
+   * @param {Function} callback - (statusObj) => void
+   */
+  onScanStatus: (callback) => {
+    ipcRenderer.removeAllListeners('scan-status');
+    ipcRenderer.on('scan-status', (_, data) => callback(data));
+  },
+
+  /**
+   * 监听发现新设备事件 (单个设备信息)
+   * @param {Function} callback - (deviceObj) => void
+   */
+  onScanDeviceFound: (callback) => {
+    ipcRenderer.removeAllListeners('scan-device-found');
+    ipcRenderer.on('scan-device-found', (_, device) => callback(device));
+  },
+
+
+  // ========================================================================
+  //                          4. 吞吐量测试模块 (TCP/UDP)
+  // ========================================================================
+  /**
+   * 启动吞吐量测试服务端
+   * @param {Object} config - { port: number, protocol: 'tcp'|'udp' }
+   * @returns {Promise<string>} 启动结果消息
+   */
   startServer: (config) => ipcRenderer.invoke('net:tp-server', config),
+
+  /**
+   * 停止服务端
+   */
+  stopServer: () => ipcRenderer.send('net:tp-server-stop'),
+
+  /**
+   * 启动吞吐量测试客户端
+   * @param {Object} config - { ip, port, protocol, bandwidth, size }
+   */
   startClient: (config) => ipcRenderer.send('net:tp-client-start', config),
+
+  /**
+   * 停止客户端测试
+   */
   stopClient: () => ipcRenderer.send('net:tp-stop'),
-  stopServer: () => ipcRenderer.send('net:tp-server-stop'), // 新增：单独停止服务端
-  onTpData: (callback) => ipcRenderer.on('tp-data', (_, speed) => callback(speed)),
-  onTpLog: (callback) => ipcRenderer.on('tp-log', (_, msg) => callback(msg)),
 
-  // ==================== 文件传输 (HRUFT集成) ====================
+  /**
+   * 监听实时速度数据 (Mbps)
+   * @param {Function} callback - (speedStr) => void
+   */
+  onTpData: (callback) => {
+    ipcRenderer.removeAllListeners('tp-data');
+    ipcRenderer.on('tp-data', (_, speed) => callback(speed));
+  },
+
+  /**
+   * 监听吞吐量测试日志
+   * @param {Function} callback - (msg) => void
+   */
+  onTpLog: (callback) => {
+    ipcRenderer.removeAllListeners('tp-log');
+    ipcRenderer.on('tp-log', (_, msg) => callback(msg));
+  },
+
+
+  // ========================================================================
+  //                          5. 文件传输模块 (集成 HRUFT)
+  // ========================================================================
+
+  // --- 通用/配置 ---
+
+  /**
+   * 打开系统对话框选择保存目录
+   * @returns {Promise<string|null>} 选中的路径
+   */
   selectSavePath: () => ipcRenderer.invoke('file:select-save-path'),
-  startTransferServer: (config) => ipcRenderer.invoke('file:start-server', config),
-  stopTransferServer: () => ipcRenderer.send('file:stop-server'),
 
-  // 新增：HRUFT特定功能
-  getHruftVersion: () => ipcRenderer.invoke('file:hruft-version'),
-  getHruftStats: () => ipcRenderer.invoke('file:hruft-stats'),
-  cancelTransfer: (transferId) => ipcRenderer.send('file:cancel-transfer', transferId),
-  pauseTransfer: (transferId) => ipcRenderer.send('file:pause-transfer', transferId),
-  resumeTransfer: (transferId) => ipcRenderer.send('file:resume-transfer', transferId),
-
-  sendFile: (config) => ipcRenderer.send('file:send', config),
-
-  // 传输事件监听
-  onTransferLog: (callback) => ipcRenderer.on('transfer-log', (_, msg) => callback(msg)),
-  onFileTransferStart: (callback) => ipcRenderer.on('file-transfer-start', (_, data) => callback(data)),
-  onFileTransferProgress: (callback) => ipcRenderer.on('file-transfer-progress', (_, data) => callback(data)),
-  onFileTransferComplete: (callback) => ipcRenderer.on('file-transfer-complete', (_, data) => callback(data)),
-  onFileTransferError: (callback) => ipcRenderer.on('file-transfer-error', (_, data) => callback(data)),
-
-  onFileSendStart: (callback) => ipcRenderer.on('file-send-start', (_, data) => callback(data)),
-  onFileSendProgress: (callback) => ipcRenderer.on('file-send-progress', (_, data) => callback(data)),
-  onFileSendComplete: (callback) => ipcRenderer.on('file-send-complete', (_, data) => callback(data)),
-  onFileSendError: (callback) => ipcRenderer.on('file-send-error', (_, data) => callback(data)),
-
-  // 新增：HRUFT统计事件
-  onHruftStatsUpdate: (callback) => ipcRenderer.on('hruft-stats-update', (_, stats) => callback(stats)),
-  onHruftStatusChange: (callback) => ipcRenderer.on('hruft-status-change', (_, status) => callback(status)),
-
-  // 文件选择
+  /**
+   * 打开系统对话框选择要发送的文件
+   * @returns {Promise<Object|null>} { path, name, size }
+   */
   selectSendFile: () => ipcRenderer.invoke('file:select-send-file'),
 
-  // ==================== 系统功能 ====================
-  clearArpCache: () => ipcRenderer.invoke('sys:clear-arp'),
-  getSystemInfo: () => ipcRenderer.invoke('sys:info'),
-  exportData: (data, filename) => ipcRenderer.invoke('sys:export-data', { data, filename }),
+  /**
+   * 启动文件接收服务 (HRUFT Server)
+   * @param {Object} config - { port, savePath }
+   * @returns {Promise<string>} 启动结果
+   */
+  startTransferServer: (config) => ipcRenderer.invoke('file:start-server', config),
 
-  // ==================== 应用控制 ====================
-  restartApp: () => ipcRenderer.send('app:restart'),
-  quitApp: () => ipcRenderer.send('app:quit'),
-  showDevTools: () => ipcRenderer.send('app:devtools'),
+  /**
+   * 停止文件接收服务
+   */
+  stopTransferServer: () => ipcRenderer.send('file:stop-server'),
 
-  // ==================== 日志功能 ====================
-  getLogs: () => ipcRenderer.invoke('log:get'),
-  clearLogs: () => ipcRenderer.invoke('log:clear'),
-  exportLogs: () => ipcRenderer.invoke('log:export'),
+  /**
+   * 发送文件 (客户端)
+   * @param {Object} config - { ip, port, filePath, protocol, udtConfig }
+   */
+  sendFile: (config) => ipcRenderer.send('file:send', config),
 
-  // ==================== 更新检查 ====================
-  checkForUpdates: () => ipcRenderer.invoke('update:check'),
-  downloadUpdate: () => ipcRenderer.send('update:download'),
-  installUpdate: () => ipcRenderer.send('update:install')
+  /**
+   * 取消特定的 HRUFT 传输 (预留接口)
+   * @param {string} transferId
+   */
+  cancelTransfer: (transferId) => ipcRenderer.send('file:cancel-transfer', transferId),
+
+  // --- 事件监听 (日志与状态) ---
+
+  /**
+   * 监听通用传输日志 (命令行输出、系统消息)
+   */
+  onTransferLog: (callback) => {
+    ipcRenderer.removeAllListeners('transfer-log');
+    ipcRenderer.on('transfer-log', (_, msg) => callback(msg));
+  },
+
+  // --- 发送端事件 (Client) ---
+
+  onFileSendStart: (callback) => {
+    ipcRenderer.removeAllListeners('file-send-start');
+    ipcRenderer.on('file-send-start', (_, data) => callback(data));
+  },
+  onFileSendProgress: (callback) => {
+    ipcRenderer.removeAllListeners('file-send-progress');
+    ipcRenderer.on('file-send-progress', (_, data) => callback(data));
+  },
+  onFileSendComplete: (callback) => {
+    ipcRenderer.removeAllListeners('file-send-complete');
+    ipcRenderer.on('file-send-complete', (_, data) => callback(data));
+  },
+  onFileSendError: (callback) => {
+    ipcRenderer.removeAllListeners('file-send-error');
+    ipcRenderer.on('file-send-error', (_, data) => callback(data));
+  },
+
+  // --- 接收端事件 (Server) ---
+
+  onFileTransferStart: (callback) => { // 注意：当前主进程逻辑可能未触发此事件，视具体实现而定
+    ipcRenderer.removeAllListeners('file-transfer-start');
+    ipcRenderer.on('file-transfer-start', (_, data) => callback(data));
+  },
+  onFileTransferProgress: (callback) => {
+    ipcRenderer.removeAllListeners('file-transfer-progress');
+    ipcRenderer.on('file-transfer-progress', (_, data) => callback(data));
+  },
+  onFileTransferComplete: (callback) => {
+    ipcRenderer.removeAllListeners('file-transfer-complete');
+    ipcRenderer.on('file-transfer-complete', (_, data) => callback(data));
+  },
+  onFileTransferError: (callback) => {
+    ipcRenderer.removeAllListeners('file-transfer-error');
+    ipcRenderer.on('file-transfer-error', (_, data) => callback(data));
+  },
+
+
+  // ========================================================================
+  //                          6. 应用级控制 (可选)
+  // ========================================================================
+  /**
+   * 打开开发者工具 (调试用)
+   */
+  openDevTools: () => ipcRenderer.send('app:devtools'), // 需要在 main.js 对应监听
+
+  /**
+   * 清理所有监听器 (页面卸载时调用)
+   */
+  removeAllListeners: () => {
+    const channels = [
+      'ping-reply', 'scan-status', 'scan-device-found',
+      'tp-data', 'tp-log', 'transfer-log',
+      'file-send-progress', 'file-send-complete', 'file-send-error',
+      'file-transfer-progress', 'file-transfer-complete', 'file-transfer-error'
+    ];
+    channels.forEach(ch => ipcRenderer.removeAllListeners(ch));
+  }
 });
