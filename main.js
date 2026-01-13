@@ -773,8 +773,8 @@ const FileTransferModule = {
             if (protocol === 'hruft') {
                 // HRUFT 接收模式
                 const hruft = getHruftPath();
-                const targetFile = path.join(savePath, `recv_${Date.now()}.bin`);
-                const args = ['recv', port.toString(), targetFile, '--detailed'];
+                //const targetFile = path.join(savePath, `recv_${Date.now()}.bin`);
+                const args = ['recv', port.toString(), savePath, '--detailed'];
 
                 const child = spawn(hruft.path, args);
                 const pid = `recv-${port}`;
