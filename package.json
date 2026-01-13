@@ -17,13 +17,12 @@
     "build:all": "electron-builder -wl",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "postinstall": "electron-builder install-app-deps",
     "setup:hruft": "node scripts/setup-hruft.js",
+    "setup:binaries": "node scripts/download-binaries.js",
     "test": "jest --verbose",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "setup:binaries": "node scripts/download-binaries.js",
-    "postinstall": "npm run setup:binaries"
+    "prebuild": "node scripts/pre-build-check.js"
   },
   "dependencies": {
     "chart.js": "^4.4.0",
@@ -56,6 +55,7 @@
     },
     "files": [
       "**/*",
+      "!bin/**/*",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
       "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
       "!**/node_modules/*.d.ts",
@@ -64,15 +64,18 @@
       "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
       "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
       "!**/{appveyor.yml,.travis.yml,circle.yml}",
-      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
+      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}",
+      "!scripts/**/*",
+      "!temp/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/iconv-lite/**/*"
     ],
     "extraResources": [
       {
-        "from": "bin/",
+        "from": "bin/${os}",
         "to": "bin",
-        "filter": [
-          "**/*"
-        ]
+        "filter": ["**/*"]
       }
     ],
     "win": {
@@ -87,7 +90,7 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64", "ia32"]
+          "arch": ["x64"]
         },
         "portable"
       ],
@@ -115,6 +118,19 @@
     "portable": {
       "artifactName": "NetTestToolPro-Portable.exe"
     },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "darkModeSupport": true,
+      "extraResources": [
+        {
+          "from": "bin/mac",
+          "to": "bin",
+          "filter": ["**/*"]
+        }
+      ],
+      "target": ["dmg", "zip"]
+    },
     "dmg": {
       "background": "build/background.png",
       "icon": "build/icon.icns",
@@ -137,25 +153,25 @@
       }
     },
     "linux": {
-      "target": ["AppImage", "deb", "rpm", "snap"],
       "icon": "build/icons",
       "category": "Network",
       "maintainer": "NetTestTool Team <2013182991@qq.com>",
       "synopsis": "Professional Network Testing Tool",
-      "description": "NetTestTool Pro is a comprehensive network testing tool with HRUFT reliable UDP transmission support."
+      "description": "NetTestTool Pro is a comprehensive network testing tool with HRUFT reliable UDP transmission support.",
+      "extraResources": [
+        {
+          "from": "bin/linux",
+          "to": "bin",
+          "filter": ["**/*"]
+        }
+      ],
+      "target": ["AppImage", "deb", "rpm"]
     },
     "appImage": {
       "artifactName": "NetTestToolPro-${version}.${ext}"
     },
     "deb": {
       "depends": ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1", "libappindicator3-1", "libsecret-1-0"]
-    },
-    "snap": {
-      "confinement": "strict",
-      "grade": "stable",
-      "summary": "Professional Network Testing Tool",
-      "description": "A comprehensive network testing tool with reliable UDP transmission support.",
-      "plugs": ["network", "network-bind", "hardware-observe"]
     },
     "publish": {
       "provider": "github",

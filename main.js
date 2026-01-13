@@ -6,7 +6,7 @@ const net = require('net');
 const dgram = require('dgram');
 const fs = require('fs');
 const crypto = require('crypto');
-const iconv = require('iconv-lite'); // 需要确保 package.json 中有此依赖
+const iconv = require('iconv-lite');
 
 // ============================================================================
 //                               全局配置 & 状态
@@ -14,6 +14,30 @@ const iconv = require('iconv-lite'); // 需要确保 package.json 中有此依�
 
 let mainWindow = null;
 const isWin = process.platform === 'win32';
+const isDev = !app.isPackaged; // 判断是否为开发模式
+
+/**
+ * 获取资源根目录
+ * 开发环境: __dirname
+ * 打包后: process.resourcesPath
+ */
+function getResourcesPath() {
+    if (isDev) {
+        return __dirname;
+    }
+    // 打包后: resources 目录
+    return process.resourcesPath;
+}
+
+/**
+ * 获取二进制文件目录
+ * 开发: bin/windows, bin/linux, bin/mac
+ * 打包: resources/bin
+ */
+function getBinPath() {
+    const resourcesPath = getResourcesPath();
+    return path.join(resourcesPath, 'bin');
+}
 
 // HRUFT 路径配置 (根据 README)
 const HRUFT_CONFIG = {
@@ -43,57 +67,111 @@ const IPERF_CONFIG = {
 // ============================================================================
 
 /**
- * 获取 HRUFT 可执行文件路径（兼容开发环境和打包环境）
+ * 获取 HRUFT 可执行文件路径 (修复版)
  */
 function getHruftPath() {
     const platform = process.platform;
-    const config = HRUFT_CONFIG[platform] || HRUFT_CONFIG.linux; // 默认回退
+    const binDir = getBinPath();
 
-    // 1. 优先检查开发环境路径
-    let execPath = path.join(__dirname, ...config.path.split('/'));
-
-    // 2. 如果不存在，检查打包后的资源路径 (resources/bin/...)
-    if (!fs.existsSync(execPath)) {
-        execPath = path.join(process.resourcesPath, config.path);
+    let execName;
+    switch (platform) {
+        case 'win32':
+            execName = 'hruft.exe';
+            break;
+        case 'darwin':
+            execName = 'hruft';
+            break;
+        default: // linux
+            execName = 'hruft';
     }
 
-    // 3. 再次检查，如果还是不存在，打印警告
+    const execPath = path.join(binDir, execName);
+
+    console.log('[HRUFT] 路径解析:', {
+        isDev,
+        platform,
+        resourcesPath: getResourcesPath(),
+        binDir,
+        execPath,
+        exists: fs.existsSync(execPath)
+    });
+
+    // 检查文件是否存在
     if (!fs.existsSync(execPath)) {
-        console.warn(`[HRUFT] Binary not found at: ${execPath}`);
-    } else if (platform !== 'win32') {
-        // 确保有执行权限
-        try {
-            fs.chmodSync(execPath, 0o755);
-        } catch (e) {
+        console.error(`[HRUFT] 可执行文件不存在: ${execPath}`);
+
+        // 尝试查找备用路径 (开发环境)
+        if (isDev) {
+            const devPath = path.join(__dirname, 'bin', platform === 'darwin' ? 'mac' : platform, execName);
+            if (fs.existsSync(devPath)) {
+                console.log(`[HRUFT] 使用开发路径: ${devPath}`);
+                return { path: devPath, command: execName };
+            }
         }
+
+        return { path: null, command: execName };
     }
 
-    return {path: execPath, command: config.cmd};
-}
-
-/**
- * 获取 iPerf 可执行文件路径
- */
-function getIperfPath(version) {
-    const platform = process.platform;
-    const config = IPERF_CONFIG[platform];
-    if (!config) return null;
-
-    let execPath = path.join(__dirname, config[version]);
-
-    if (!fs.existsSync(execPath)) {
-        execPath = path.join(process.resourcesPath, config[version]);
-    }
-
-    if (!fs.existsSync(execPath)) {
-        console.warn(`[iPerf] Binary not found: ${execPath}`);
-        return null;
-    }
-
+    // 设置执行权限 (Linux/Mac)
     if (platform !== 'win32') {
         try {
             fs.chmodSync(execPath, 0o755);
         } catch (e) {
+            console.warn('[HRUFT] 设置权限失败:', e.message);
+        }
+    }
+
+    return { path: execPath, command: execName };
+}
+
+/**
+ * 获取 iPerf 可执行文件路径 (修复版)
+ * @param {string} version - 'iperf2' | 'iperf3'
+ */
+function getIperfPath(version) {
+    const platform = process.platform;
+    const binDir = getBinPath();
+
+    let execName;
+    switch (platform) {
+        case 'win32':
+            execName = `${version}.exe`;
+            break;
+        default:
+            execName = version;
+    }
+
+    const execPath = path.join(binDir, execName);
+
+    console.log(`[iPerf] 路径解析 (${version}):`, {
+        isDev,
+        platform,
+        binDir,
+        execPath,
+        exists: fs.existsSync(execPath)
+    });
+
+    if (!fs.existsSync(execPath)) {
+        console.error(`[iPerf] ${version} 不存在: ${execPath}`);
+
+        // 尝试开发环境路径
+        if (isDev) {
+            const devPath = path.join(__dirname, 'bin', platform === 'darwin' ? 'mac' : platform, execName);
+            if (fs.existsSync(devPath)) {
+                console.log(`[iPerf] 使用开发路径: ${devPath}`);
+                return devPath;
+            }
+        }
+
+        return null;
+    }
+
+    // 设置执行权限 (Linux/Mac)
+    if (platform !== 'win32') {
+        try {
+            fs.chmodSync(execPath, 0o755);
+        } catch (e) {
+            console.warn(`[iPerf] 设置权限失败:`, e.message);
         }
     }
 
@@ -163,9 +241,23 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
 
+    // 开发模式打开 DevTools
+    if (isDev) {
+        mainWindow.webContents.openDevTools();
+    }
+
     // 添加窗口销毁事件
     mainWindow.on('closed', () => {
         mainWindow = null;
+    });
+
+    // 打印路径调试信息
+    console.log('[启动信息]', {
+        isDev,
+        __dirname,
+        resourcesPath: getResourcesPath(),
+        binPath: getBinPath(),
+        platform: process.platform
     });
 }
 
@@ -189,6 +281,10 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
         app.quit();
     }
+});
+
+app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
 // 退出前清理所有子进程
