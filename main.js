@@ -556,6 +556,7 @@ const ScanModule = {
 const ThroughputModule = {
     serverProcess: null,
     clientProcess: null,
+    currentSession: null, // 当前测试会话信息
 
     startServer: (config) => {
         return new Promise((resolve, reject) => {
@@ -573,28 +574,60 @@ const ThroughputModule = {
             if (version === 'iperf3') {
                 args.push('-s', '-p', port.toString());
                 if (protocol === 'udp') args.push('--udp');
+                args.push('--format', 'm'); // 使用 Mbits 格式
             } else {
                 args.push('-s', '-p', port.toString());
                 if (protocol === 'udp') args.push('-u');
+                args.push('-f', 'm'); // 使用 Mbits 格式
             }
 
             const child = spawn(iperfPath, args);
             ThroughputModule.serverProcess = child;
 
+            // 初始化会话信息
+            ThroughputModule.currentSession = {
+                role: 'server',
+                protocol: protocol.toUpperCase(),
+                version: version,
+                port: port,
+                startTime: Date.now(),
+                connections: []
+            };
+
+            let outputBuffer = '';
+            let isFirstOutput = true;
+
             child.stdout.on('data', data => {
-                safeSend('tp-log', decodeOutput(data));
+                const text = decodeOutput(data);
+                outputBuffer += text;
+
+                // 按行处理
+                const lines = outputBuffer.split('\n');
+                outputBuffer = lines.pop() || ''; // 保留不完整的行
+
+                lines.forEach(line => {
+                    const formatted = ThroughputModule.formatServerOutput(line, isFirstOutput);
+                    if (formatted) {
+                        safeSend('tp-log', formatted);
+                        isFirstOutput = false;
+                    }
+                });
             });
 
             child.stderr.on('data', data => {
-                safeSend('tp-log', `[错误] ${decodeOutput(data)}`);
+                const text = decodeOutput(data);
+                const formatted = ThroughputModule.formatErrorOutput(text);
+                safeSend('tp-log', formatted);
             });
 
             child.on('close', code => {
-                safeSend('tp-log', `服务端已停止 (code: ${code})`);
+                const duration = Math.floor((Date.now() - ThroughputModule.currentSession.startTime) / 1000);
+                safeSend('tp-log', ThroughputModule.formatServerClose(code, duration));
                 ThroughputModule.serverProcess = null;
+                ThroughputModule.currentSession = null;
             });
 
-            resolve(`${version} 服务端已启动 (端口: ${port}, 协议: ${protocol.toUpperCase()})`);
+            resolve(`✅ ${version === 'iperf3' ? 'iPerf3' : 'iPerf2'} 服务端已启动\n📡 监听端口: ${port}\n🔗 协议: ${protocol.toUpperCase()}\n⏰ 等待客户端连接...`);
         });
     },
 
@@ -606,7 +639,7 @@ const ThroughputModule = {
                 console.warn('[Throughput] 停止服务端失败:', e.message);
             }
             ThroughputModule.serverProcess = null;
-            safeSend('tp-log', '服务端已停止');
+            safeSend('tp-log', '🛑 服务端已手动停止');
         }
     },
 
@@ -617,9 +650,20 @@ const ThroughputModule = {
         const iperfPath = getIperfPath(version);
 
         if (!iperfPath) {
-            safeSend('tp-log', `错误: ${version} 未找到`);
+            safeSend('tp-log', `❌ 错误: ${version} 未找到`);
             return;
         }
+
+        // 初始化会话信息
+        ThroughputModule.currentSession = {
+            role: 'client',
+            protocol: protocol.toUpperCase(),
+            version: version,
+            target: `${ip}:${port}`,
+            duration: duration,
+            startTime: Date.now(),
+            intervals: []
+        };
 
         const args = [];
 
@@ -628,38 +672,54 @@ const ThroughputModule = {
             if (protocol === 'udp') {
                 args.push('--udp', '-b', `${bandwidth}M`);
             }
-            args.push('-i', '1');
+            args.push('-i', '1'); // 每秒报告一次
+            args.push('--format', 'm'); // 使用 Mbits 格式
         } else {
             args.push('-c', ip, '-p', port.toString(), '-t', duration.toString(), '-i', '1');
             if (protocol === 'udp') {
                 args.push('-u', '-b', `${bandwidth}M`);
             }
+            args.push('-f', 'm'); // 使用 Mbits 格式
         }
 
         const child = spawn(iperfPath, args);
         ThroughputModule.clientProcess = child;
 
-        safeSend('tp-log', `开始测试: ${ip}:${port} (${protocol.toUpperCase()})`);
+        // 发送开始消息
+        safeSend('tp-log', ThroughputModule.formatClientStart(config));
+
+        let outputBuffer = '';
 
         child.stdout.on('data', data => {
-            const output = decodeOutput(data);
-            safeSend('tp-log', output);
+            const text = decodeOutput(data);
+            outputBuffer += text;
 
-            const speedMatch = output.match(/([\d\.]+)\s+(M|G)bits\/sec/);
-            if (speedMatch) {
-                let speed = parseFloat(speedMatch[1]);
-                if (speedMatch[2] === 'G') speed *= 1000;
-                safeSend('tp-data', speed.toFixed(2));
-            }
+            // 按行处理
+            const lines = outputBuffer.split('\n');
+            outputBuffer = lines.pop() || '';
+
+            lines.forEach(line => {
+                const formatted = ThroughputModule.formatClientOutput(line);
+                if (formatted.message) {
+                    safeSend('tp-log', formatted.message);
+                }
+                if (formatted.speed !== null) {
+                    safeSend('tp-data', formatted.speed);
+                }
+            });
         });
 
         child.stderr.on('data', data => {
-            safeSend('tp-log', `[错误] ${decodeOutput(data)}`);
+            const text = decodeOutput(data);
+            const formatted = ThroughputModule.formatErrorOutput(text);
+            safeSend('tp-log', formatted);
         });
 
         child.on('close', code => {
-            safeSend('tp-log', `测试完成 (code: ${code})`);
+            const summary = ThroughputModule.formatClientClose(code);
+            safeSend('tp-log', summary);
             ThroughputModule.clientProcess = null;
+            ThroughputModule.currentSession = null;
         });
     },
 
@@ -671,8 +731,293 @@ const ThroughputModule = {
                 console.warn('[Throughput] 停止客户端失败:', e.message);
             }
             ThroughputModule.clientProcess = null;
-            safeSend('tp-log', '测试已停止');
+            safeSend('tp-log', '🛑 测试已手动停止');
         }
+    },
+
+    // ========== 格式化函数 ==========
+
+    formatServerOutput: (line, isFirst) => {
+        line = line.trim();
+        if (!line) return null;
+
+        // 🎯 服务器启动消息
+        if (line.includes('Server listening')) {
+            const portMatch = line.match(/listening on (\d+)/);
+            const port = portMatch ? portMatch[1] : 'unknown';
+            return `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎯 服务器监听中 | 端口: ${port}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+        }
+
+        // 🔗 客户端连接
+        if (line.includes('Accepted connection')) {
+            const ipMatch = line.match(/from ([0-9\.]+), port (\d+)/);
+            if (ipMatch) {
+                const clientIp = ipMatch[1];
+                const clientPort = ipMatch[2];
+                return `\n📥 客户端已连接\n   来源: ${clientIp}:${clientPort}\n   时间: ${new Date().toLocaleTimeString()}`;
+            }
+        }
+
+        // 📊 本地连接建立
+        if (line.includes('local') && line.includes('connected to')) {
+            const match = line.match(/local ([0-9\.]+) port (\d+) connected to ([0-9\.]+) port (\d+)/);
+            if (match) {
+                return `   本地: ${match[1]}:${match[2]} ←→ 远程: ${match[3]}:${match[4]}`;
+            }
+        }
+
+        // 📋 表头
+        if (line.includes('Interval') && line.includes('Transfer') && line.includes('Bandwidth')) {
+            return `\n📊 实时数据流\n${'─'.repeat(60)}`;
+        }
+
+        // 📈 实时数据 (每秒)
+        const dataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
+        if (dataMatch) {
+            const [, id, start, end, transfer, bandwidth] = dataMatch;
+            const interval = `${parseFloat(start).toFixed(0)}-${parseFloat(end).toFixed(0)}`;
+
+            // 提取速度值用于图表
+            const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
+            if (speedMatch) {
+                const speed = parseFloat(speedMatch[1]);
+                const unit = speedMatch[2];
+                let speedMbps = speed;
+
+                if (unit === 'G') speedMbps = speed * 1000;
+                else if (unit === 'K') speedMbps = speed / 1000;
+
+                // 发送速度数据到图表
+                safeSend('tp-data', speedMbps.toFixed(2));
+            }
+
+            return `⏱️  ${interval}秒 | 📦 ${transfer.padEnd(12)} | ⚡ ${bandwidth}`;
+        }
+
+        // 📊 最终汇总
+        if (line.includes('sender') || line.includes('receiver')) {
+            const summaryMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+(sender|receiver)/);
+            if (summaryMatch) {
+                const [, id, start, end, transfer, bandwidth, role] = summaryMatch;
+                const roleIcon = role === 'sender' ? '📤' : '📥';
+                const roleText = role === 'sender' ? '发送端' : '接收端';
+
+                return `\n${'━'.repeat(60)}\n${roleIcon} ${roleText}汇总 (${start}-${end}秒)\n   总传输: ${transfer}\n   平均速度: ${bandwidth}\n${'━'.repeat(60)}`;
+            }
+        }
+
+        // 🔚 分隔线
+        if (line.match(/^-+$/)) {
+            return null; // 忽略分隔线
+        }
+
+        // 其他信息保持原样
+        return line;
+    },
+
+    formatClientStart: (config) => {
+        const { ip, port, protocol, duration, bandwidth, version } = config;
+
+        let message = `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        message += `🚀 开始测试\n`;
+        message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        message += `   目标服务器: ${ip}:${port}\n`;
+        message += `   协议: ${protocol.toUpperCase()}\n`;
+        message += `   测试时长: ${duration} 秒\n`;
+
+        if (protocol === 'udp') {
+            message += `   目标带宽: ${bandwidth} Mbps\n`;
+        }
+
+        message += `   工具版本: ${version === 'iperf3' ? 'iPerf3' : 'iPerf2'}\n`;
+        message += `   开始时间: ${new Date().toLocaleTimeString()}\n`;
+        message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+
+        return message;
+    },
+
+    formatClientOutput: (line) => {
+        line = line.trim();
+        if (!line) return { message: null, speed: null };
+
+        // 🔗 连接建立
+        if (line.includes('Connecting to host')) {
+            const match = line.match(/Connecting to host ([^,]+), port (\d+)/);
+            if (match) {
+                return {
+                    message: `🔗 正在连接到 ${match[1]}:${match[2]}...`,
+                    speed: null
+                };
+            }
+        }
+
+        // 📋 表头
+        if (line.includes('Interval') && line.includes('Transfer') && line.includes('Bandwidth')) {
+            return {
+                message: `\n📊 测试数据\n${'─'.repeat(60)}`,
+                speed: null
+            };
+        }
+
+        // 📈 实时数据
+        const dataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
+        if (dataMatch) {
+            const [, id, start, end, transfer, bandwidth] = dataMatch;
+            const interval = `${parseFloat(start).toFixed(0)}-${parseFloat(end).toFixed(0)}`;
+
+            // 提取速度值
+            const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
+            let speedMbps = null;
+
+            if (speedMatch) {
+                const speed = parseFloat(speedMatch[1]);
+                const unit = speedMatch[2];
+                speedMbps = speed;
+
+                if (unit === 'G') speedMbps = speed * 1000;
+                else if (unit === 'K') speedMbps = speed / 1000;
+            }
+
+            // 记录到会话
+            if (ThroughputModule.currentSession) {
+                ThroughputModule.currentSession.intervals.push({
+                    interval: `${start}-${end}`,
+                    transfer: transfer,
+                    bandwidth: bandwidth,
+                    speed: speedMbps
+                });
+            }
+
+            return {
+                message: `⏱️  ${interval}秒 | 📦 ${transfer.padEnd(12)} | ⚡ ${bandwidth}`,
+                speed: speedMbps ? speedMbps.toFixed(2) : null
+            };
+        }
+
+        // 📊 最终汇总
+        if (line.includes('sender') || line.includes('receiver')) {
+            const summaryMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+(sender|receiver)/);
+            if (summaryMatch) {
+                const [, id, start, end, transfer, bandwidth, role] = summaryMatch;
+                const roleIcon = role === 'sender' ? '📤' : '📥';
+                const roleText = role === 'sender' ? '发送端' : '接收端';
+
+                return {
+                    message: `\n${'━'.repeat(60)}\n${roleIcon} ${roleText}汇总 (${start}-${end}秒)\n   总传输: ${transfer}\n   平均速度: ${bandwidth}\n${'━'.repeat(60)}`,
+                    speed: null
+                };
+            }
+        }
+
+        // UDP 特有的丢包信息
+        if (line.includes('datagrams')) {
+            const lossMatch = line.match(/([\d\.]+)%/);
+            if (lossMatch) {
+                const lossRate = parseFloat(lossMatch[1]);
+                const emoji = lossRate < 1 ? '✅' : lossRate < 5 ? '⚠️' : '❌';
+                return {
+                    message: `${emoji} UDP 丢包率: ${lossRate}%`,
+                    speed: null
+                };
+            }
+        }
+
+        // 🔚 分隔线
+        if (line.match(/^-+$/)) {
+            return { message: null, speed: null };
+        }
+
+        // 其他信息
+        return { message: line, speed: null };
+    },
+
+    formatClientClose: (code) => {
+        if (!ThroughputModule.currentSession) {
+            return code === 0 ? '✅ 测试完成' : `⚠️ 测试异常退出 (代码: ${code})`;
+        }
+
+        const session = ThroughputModule.currentSession;
+        const duration = Math.floor((Date.now() - session.startTime) / 1000);
+
+        // 计算统计信息
+        let avgSpeed = 0;
+        let maxSpeed = 0;
+        let minSpeed = Infinity;
+
+        if (session.intervals && session.intervals.length > 0) {
+            session.intervals.forEach(interval => {
+                if (interval.speed !== null) {
+                    avgSpeed += interval.speed;
+                    maxSpeed = Math.max(maxSpeed, interval.speed);
+                    minSpeed = Math.min(minSpeed, interval.speed);
+                }
+            });
+            avgSpeed = avgSpeed / session.intervals.length;
+        }
+
+        let summary = `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        summary += `📊 测试完成\n`;
+        summary += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        summary += `   总时长: ${duration} 秒\n`;
+
+        if (avgSpeed > 0) {
+            summary += `   平均速度: ${avgSpeed.toFixed(2)} Mbps\n`;
+            summary += `   最高速度: ${maxSpeed.toFixed(2)} Mbps\n`;
+            if (minSpeed < Infinity) {
+                summary += `   最低速度: ${minSpeed.toFixed(2)} Mbps\n`;
+            }
+        }
+
+        summary += `   结束时间: ${new Date().toLocaleTimeString()}\n`;
+
+        if (code === 0) {
+            summary += `   状态: ✅ 正常完成\n`;
+        } else {
+            summary += `   状态: ⚠️ 异常退出 (代码: ${code})\n`;
+        }
+
+        summary += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+        return summary;
+    },
+
+    formatServerClose: (code, duration) => {
+        let message = `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        message += `🛑 服务端已停止\n`;
+        message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        message += `   运行时长: ${duration} 秒\n`;
+
+        if (code === 0) {
+            message += `   状态: ✅ 正常关闭\n`;
+        } else {
+            message += `   状态: ⚠️ 异常退出 (代码: ${code})\n`;
+        }
+
+        message += `   结束时间: ${new Date().toLocaleTimeString()}\n`;
+        message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+        return message;
+    },
+
+    formatErrorOutput: (text) => {
+        text = text.trim();
+        if (!text) return null;
+
+        // 常见错误的友好提示
+        if (text.includes('Connection refused')) {
+            return '❌ 连接被拒绝 - 请检查服务端是否已启动';
+        }
+        if (text.includes('No route to host')) {
+            return '❌ 无法到达主机 - 请检查网络连接和IP地址';
+        }
+        if (text.includes('Address already in use')) {
+            return '❌ 端口已被占用 - 请更换端口或关闭占用该端口的程序';
+        }
+        if (text.includes('Permission denied')) {
+            return '❌ 权限不足 - 某些端口可能需要管理员权限';
+        }
+
+        return `⚠️ ${text}`;
     },
 
     cleanup: () => {

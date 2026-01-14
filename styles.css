@@ -196,8 +196,12 @@ body {
 }
 
 @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
 }
 
 /* ===== 主内容区 ===== */
@@ -371,8 +375,15 @@ body {
     font-weight: 500;
 }
 
-.flex-1 { flex: 1; min-width: 150px; }
-.flex-2 { flex: 2; min-width: 200px; }
+.flex-1 {
+    flex: 1;
+    min-width: 150px;
+}
+
+.flex-2 {
+    flex: 2;
+    min-width: 200px;
+}
 
 input, select {
     background: var(--bg-input);
@@ -774,4 +785,234 @@ input:disabled, select:disabled {
     background: rgba(255, 71, 87, 0.1);
     border-radius: var(--radius-sm);
     border-left: 4px solid var(--danger);
+}
+
+/* ===== iPerf 日志增强样式 ===== */
+
+/* 控制台输出美化 */
+.console-output {
+    background: #000;
+    color: var(--text-code);
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    padding: 16px;
+    height: 400px; /* 增加高度以容纳更多日志 */
+    overflow-y: auto;
+    font-size: 0.9rem;
+    line-height: 1.8;
+    white-space: pre-wrap; /* 保留空格和换行 */
+    word-wrap: break-word;
+}
+
+/* 日志行基础样式 */
+.log-line {
+    margin: 2px 0;
+    padding: 2px 0;
+}
+
+/* Emoji 和图标行 - 增加间距 */
+.console-output div:has(> *:first-child:is([class*="emoji"])),
+.console-output div:contains("🎯"),
+.console-output div:contains("📊"),
+.console-output div:contains("🚀"),
+.console-output div:contains("✅"),
+.console-output div:contains("❌"),
+.console-output div:contains("⚠️"),
+.console-output div:contains("🔗"),
+.console-output div:contains("📥"),
+.console-output div:contains("📤"),
+.console-output div:contains("🛑") {
+    margin: 4px 0;
+}
+
+/* 分隔线样式 */
+.console-output div:contains("━━━") {
+    color: var(--accent);
+    font-weight: bold;
+    margin: 8px 0;
+}
+
+.console-output div:contains("─────") {
+    color: var(--border-color);
+    margin: 4px 0;
+}
+
+/* 标题行 */
+.console-output div:contains("服务器监听中"),
+.console-output div:contains("开始测试"),
+.console-output div:contains("测试完成"),
+.console-output div:contains("服务端已停止") {
+    color: #00d9a3;
+    font-weight: bold;
+    font-size: 1.05rem;
+}
+
+/* 实时数据行 */
+.console-output div:contains("⏱️") {
+    color: #e9ecef;
+    font-family: 'Consolas', monospace;
+}
+
+/* 速度高亮 */
+.console-output div:contains("Gbits/sec") {
+    color: #00ff41;
+    font-weight: 600;
+}
+
+.console-output div:contains("Mbits/sec") {
+    color: #00d9a3;
+}
+
+.console-output div:contains("Kbits/sec") {
+    color: #ffa502;
+}
+
+/* 汇总信息 */
+.console-output div:contains("汇总") {
+    color: #6c5ce7;
+    font-weight: bold;
+}
+
+.console-output div:contains("总传输"),
+.console-output div:contains("平均速度"),
+.console-output div:contains("最高速度"),
+.console-output div:contains("最低速度") {
+    color: #a29bfe;
+    padding-left: 8px;
+}
+
+/* 错误和警告 */
+.console-output div:contains("❌"),
+.log-line.error {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+.console-output div:contains("⚠️"),
+.log-line.warning {
+    color: var(--warning);
+    font-weight: 600;
+}
+
+/* 成功消息 */
+.console-output div:contains("✅"),
+.log-line.success {
+    color: var(--success);
+    font-weight: 600;
+}
+
+/* 连接信息 */
+.console-output div:contains("客户端已连接"),
+.console-output div:contains("正在连接") {
+    color: #74b9ff;
+}
+
+/* UDP 丢包率 */
+.console-output div:contains("丢包率") {
+    padding: 4px 8px;
+    background: rgba(255, 165, 2, 0.1);
+    border-left: 3px solid var(--warning);
+    margin: 4px 0;
+}
+
+/* 统计信息盒子 */
+.console-output div:contains("运行时长"),
+.console-output div:contains("总时长") {
+    background: rgba(108, 92, 231, 0.1);
+    padding: 2px 8px;
+    border-left: 3px solid var(--accent);
+}
+
+/* 时间戳样式 */
+.console-output div:contains("开始时间"),
+.console-output div:contains("结束时间") {
+    color: #8b8d98;
+    font-size: 0.85rem;
+}
+
+/* 表格数据对齐 */
+.console-output div:contains("📦") {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+}
+
+/* 滚动条美化 */
+.console-output::-webkit-scrollbar {
+    width: 8px;
+}
+
+.console-output::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+}
+
+.console-output::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+    transition: background 0.3s ease;
+}
+
+.console-output::-webkit-scrollbar-thumb:hover {
+    background: var(--accent);
+}
+
+/* 动画效果 */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-5px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.log-line {
+    animation: fadeIn 0.3s ease;
+}
+
+/* 特殊标记高亮 */
+.console-output div:contains("sender") {
+    background: rgba(255, 71, 87, 0.1);
+    border-left: 2px solid var(--danger);
+    padding-left: 6px;
+}
+
+.console-output div:contains("receiver") {
+    background: rgba(0, 217, 163, 0.1);
+    border-left: 2px solid var(--success);
+    padding-left: 6px;
+}
+
+/* 工具提示样式（可选） */
+.console-output [title] {
+    cursor: help;
+    border-bottom: 1px dotted var(--text-muted);
+}
+
+/* 响应式调整 */
+@media (max-width: 1200px) {
+    .console-output {
+        font-size: 0.85rem;
+        height: 350px;
+    }
+}
+
+@media (max-width: 768px) {
+    .console-output {
+        font-size: 0.8rem;
+        height: 300px;
+    }
+}
+
+/* 高对比度模式支持 */
+@media (prefers-contrast: high) {
+    .console-output {
+        background: #000;
+        color: #fff;
+    }
+
+    .console-output div:contains("━━━") {
+        color: #fff;
+    }
 }
