@@ -539,23 +539,48 @@ const FileTransferModule = {
     async startServer() {
         const btn = document.getElementById('btn-recv-server');
         const path = document.getElementById('transfer-save-path').value;
+        const port = document.getElementById('transfer-recv-port').value;
 
         if (!path) {
             alert('请选择保存路径');
             return;
         }
 
+        // 调用后端 API
         const res = await window.api.startTransferServer({
-            port: parseInt(document.getElementById('transfer-recv-port').value),
+            port: parseInt(port),
             savePath: path,
             protocol: document.getElementById('transfer-recv-protocol').value
         });
 
         UIController.log('transfer-log-output', res, 'success');
+
+        // [新增] 1. 初始化进度条区域为 "等待中" 状态
+        const progressDiv = document.getElementById('transfer-progress');
+        progressDiv.style.display = 'block'; // 显示进度卡片
+
+        UIController.updateProgress('transfer-progress-bar', null, 0); // 重置进度条为 0
+
+        // 更新状态文本
+        document.getElementById('transfer-status-text').textContent = '⏳ 等待连接...';
+        document.getElementById('transfer-speed').textContent = '0.00 MB/s';
+        document.getElementById('transfer-bytes').textContent = '等待发送端启动';
+        document.getElementById('transfer-eta').textContent = '--';
+
+        // 进度条颜色设置为 "等待" 状态 (可选：通过CSS控制，这里保持默认)
+        const barFill = document.getElementById('transfer-progress-bar');
+        if(barFill) barFill.style.width = '0%';
+
+        // 按钮状态切换
         btn.innerHTML = '<span>⏸</span> 停止服务';
         btn.className = 'btn btn-danger';
+
         btn.onclick = () => {
             window.api.stopTransferServer();
+            // [新增] 2. 停止时隐藏或重置进度条
+            document.getElementById('transfer-status-text').textContent = '🛑 服务已停止';
+            document.getElementById('transfer-speed').textContent = '';
+
             btn.innerHTML = '<span>🎯</span> 开启接收服务';
             btn.className = 'btn btn-success';
             btn.onclick = () => this.startServer();
@@ -563,7 +588,6 @@ const FileTransferModule = {
     },
 
     handleProgress(data) {
-        // 🔧 优化点 1: 节流更新，避免过于频繁
         const now = Date.now();
         if (now - this.lastProgressUpdate < this.progressUpdateInterval && data.progress < 99) {
             return; // 跳过中间更新
@@ -572,31 +596,38 @@ const FileTransferModule = {
 
         const isSend = StateManager.transferMode === 'send';
 
-        // 🔧 优化点 2: 确保进度值有效
+        // 确保进度条容器是可见的 (防止服务端启动时未显式开启)
+        const progressDiv = document.getElementById('transfer-progress');
+        if (progressDiv && progressDiv.style.display === 'none') {
+            progressDiv.style.display = 'block';
+        }
+
         let progress = parseFloat(data.progress) || 0;
         progress = Math.min(100, Math.max(0, progress));
 
-        // 🔧 优化点 3: 使用实际字节数计算，确保准确性
         const currentBytes = data.sent || data.received || 0;
         const totalBytes = data.total || 1;
 
-        // 如果接近完成（>98%），使用实际字节比例
+        // 计算进度...
         if (progress > 98 || currentBytes >= totalBytes * 0.98) {
             progress = Math.min(100, (currentBytes / totalBytes) * 100);
         }
 
-        // 更新进度条
         UIController.updateProgress('transfer-progress-bar', null, progress);
 
-        // 更新状态文本
+        // [修改] 优化状态文本显示
         const statusText = document.getElementById('transfer-status-text');
         if (statusText) {
             if (progress >= 100) {
                 statusText.textContent = '✅ 传输完成';
                 statusText.style.color = '#00d9a3';
             } else if (progress > 0) {
-                statusText.textContent = isSend ? '正在发送...' : '正在接收...';
+                // 根据模式显示不同文案
+                statusText.textContent = isSend ? '🚀 正在发送...' : '📥 正在接收...';
                 statusText.style.color = '#e9ecef';
+            } else {
+                // 进度为0时的文案
+                statusText.textContent = isSend ? '准备发送...' : '⏳ 等待数据...';
             }
         }
 
@@ -607,7 +638,7 @@ const FileTransferModule = {
             speedText.textContent = `${speed.toFixed(2)} MB/s`;
         }
 
-        // 🔧 优化点 4: 精确显示字节数（保留两位小数）
+        // 字节显示
         const currentMB = currentBytes / 1024 / 1024;
         const totalMB = totalBytes / 1024 / 1024;
         const bytesText = document.getElementById('transfer-bytes');
@@ -615,7 +646,7 @@ const FileTransferModule = {
             bytesText.textContent = `${currentMB.toFixed(2)} / ${totalMB.toFixed(2)} MB`;
         }
 
-        // 🔧 优化点 5: 剩余时间计算改进
+        // 剩余时间
         const etaText = document.getElementById('transfer-eta');
         if (etaText && data.speed && data.speed > 0) {
             const remainingBytes = totalBytes - currentBytes;
