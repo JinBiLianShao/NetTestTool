@@ -585,6 +585,25 @@ const FileTransferModule = {
             const matchText = data.md5_match ? '✅ 校验通过' : '❌ 校验失败';
             UIController.log('transfer-log-output', matchText, data.md5_match ? 'success' : 'error');
         }
+
+        if (data.networkQuality) {
+            const qualityMap = {
+                'excellent': '优秀',
+                'good': '良好',
+                'fair': '一般',
+                'poor': '较差'
+            };
+            UIController.log('transfer-log-output',
+                `网络质量: ${qualityMap[data.networkQuality] || data.networkQuality}`,
+                'info');
+        }
+
+        // 新增: 显示速度统计
+        if (data.averageSpeed) {
+            UIController.log('transfer-log-output',
+                `平均速度: ${data.averageSpeed.toFixed(2)} Mbps`,
+                'success');
+        }
     }
 };
 
