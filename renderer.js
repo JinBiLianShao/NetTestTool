@@ -474,6 +474,8 @@ const ThroughputModule = {
 // ==================== 7. 文件传输模块 (HRUFT) ====================
 const FileTransferModule = {
     selectedFile: null,
+    lastProgressUpdate: 0, // 上次进度更新时间戳
+    progressUpdateInterval: 100, // 进度更新间隔 (ms)
 
     switchMode(mode) {
         StateManager.transferMode = mode;
@@ -520,7 +522,12 @@ const FileTransferModule = {
             } : null
         };
 
+        // 重置进度
+        this.lastProgressUpdate = 0;
         document.getElementById('transfer-progress').style.display = 'block';
+        UIController.updateProgress('transfer-progress-bar', null, 0);
+        document.getElementById('transfer-status-text').textContent = '准备发送...';
+
         window.api.sendFile(config);
     },
 
@@ -541,7 +548,7 @@ const FileTransferModule = {
         const res = await window.api.startTransferServer({
             port: parseInt(document.getElementById('transfer-recv-port').value),
             savePath: path,
-            protocol: document.getElementById('transfer-recv-protocol').value // 新增协议选择
+            protocol: document.getElementById('transfer-recv-protocol').value
         });
 
         UIController.log('transfer-log-output', res, 'success');
@@ -556,54 +563,207 @@ const FileTransferModule = {
     },
 
     handleProgress(data) {
-        UIController.updateProgress('transfer-progress-bar', null, data.progress);
+        // 🔧 优化点 1: 节流更新，避免过于频繁
+        const now = Date.now();
+        if (now - this.lastProgressUpdate < this.progressUpdateInterval && data.progress < 99) {
+            return; // 跳过中间更新
+        }
+        this.lastProgressUpdate = now;
 
         const isSend = StateManager.transferMode === 'send';
-        document.getElementById('transfer-status-text').textContent = isSend ? '正在发送...' : '正在接收...';
-        document.getElementById('transfer-speed').textContent = `${(data.speed || 0).toFixed(2)} MB/s`;
 
-        const current = (data.sent || data.received || 0) / 1024 / 1024;
-        const total = (data.total || 0) / 1024 / 1024;
-        document.getElementById('transfer-bytes').textContent = `${current.toFixed(2)} / ${total.toFixed(2)} MB`;
+        // 🔧 优化点 2: 确保进度值有效
+        let progress = parseFloat(data.progress) || 0;
+        progress = Math.min(100, Math.max(0, progress));
 
-        // 计算剩余时间
-        if (data.speed && data.speed > 0) {
-            const remainingMB = total - current;
-            const etaSeconds = remainingMB / data.speed;
-            const minutes = Math.floor(etaSeconds / 60);
-            const seconds = Math.floor(etaSeconds % 60);
-            document.getElementById('transfer-eta').textContent = `剩余时间: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+        // 🔧 优化点 3: 使用实际字节数计算，确保准确性
+        const currentBytes = data.sent || data.received || 0;
+        const totalBytes = data.total || 1;
+
+        // 如果接近完成（>98%），使用实际字节比例
+        if (progress > 98 || currentBytes >= totalBytes * 0.98) {
+            progress = Math.min(100, (currentBytes / totalBytes) * 100);
+        }
+
+        // 更新进度条
+        UIController.updateProgress('transfer-progress-bar', null, progress);
+
+        // 更新状态文本
+        const statusText = document.getElementById('transfer-status-text');
+        if (statusText) {
+            if (progress >= 100) {
+                statusText.textContent = '✅ 传输完成';
+                statusText.style.color = '#00d9a3';
+            } else if (progress > 0) {
+                statusText.textContent = isSend ? '正在发送...' : '正在接收...';
+                statusText.style.color = '#e9ecef';
+            }
+        }
+
+        // 更新速度显示
+        const speedText = document.getElementById('transfer-speed');
+        if (speedText) {
+            const speed = data.speed || 0;
+            speedText.textContent = `${speed.toFixed(2)} MB/s`;
+        }
+
+        // 🔧 优化点 4: 精确显示字节数（保留两位小数）
+        const currentMB = currentBytes / 1024 / 1024;
+        const totalMB = totalBytes / 1024 / 1024;
+        const bytesText = document.getElementById('transfer-bytes');
+        if (bytesText) {
+            bytesText.textContent = `${currentMB.toFixed(2)} / ${totalMB.toFixed(2)} MB`;
+        }
+
+        // 🔧 优化点 5: 剩余时间计算改进
+        const etaText = document.getElementById('transfer-eta');
+        if (etaText && data.speed && data.speed > 0) {
+            const remainingBytes = totalBytes - currentBytes;
+
+            if (remainingBytes <= 0 || progress >= 100) {
+                etaText.textContent = '剩余时间: 完成';
+                etaText.style.color = '#00d9a3';
+            } else {
+                const remainingMB = remainingBytes / 1024 / 1024;
+                const etaSeconds = remainingMB / data.speed;
+
+                if (etaSeconds < 60) {
+                    etaText.textContent = `剩余时间: ${Math.ceil(etaSeconds)} 秒`;
+                } else {
+                    const minutes = Math.floor(etaSeconds / 60);
+                    const seconds = Math.ceil(etaSeconds % 60);
+                    etaText.textContent = `剩余时间: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+                }
+                etaText.style.color = '#8b8d98';
+            }
+        }
+
+        // 🔧 优化点 6: 当接近完成时，显示特殊提示
+        if (progress > 95 && progress < 100) {
+            const statusText = document.getElementById('transfer-status-text');
+            if (statusText) {
+                statusText.textContent = '即将完成...';
+            }
         }
     },
 
     handleComplete(data) {
+        // 🔧 优化点 7: 完成时强制设置为 100%
+        const progressBar = document.getElementById('transfer-progress-bar');
+        const statusText = document.getElementById('transfer-status-text');
+
+        if (progressBar) {
+            progressBar.style.width = '100%';
+        }
+
+        if (statusText) {
+            statusText.textContent = '✅ 传输完成';
+            statusText.style.color = '#00d9a3';
+        }
+
+        // 更新字节显示为最终值
+        const bytesText = document.getElementById('transfer-bytes');
+        if (bytesText && data.fileSize) {
+            const sizeMB = (data.fileSize / 1024 / 1024).toFixed(2);
+            bytesText.textContent = `${sizeMB} / ${sizeMB} MB`;
+        }
+
+        // 清空剩余时间
+        const etaText = document.getElementById('transfer-eta');
+        if (etaText) {
+            etaText.textContent = '剩余时间: 完成';
+            etaText.style.color = '#00d9a3';
+        }
+
+        // 日志记录
         UIController.log('transfer-log-output', `✅ 传输完成: ${data.fileName}`, 'success');
-        document.getElementById('transfer-status-text').textContent = '✅ 传输完成';
-        document.getElementById('transfer-progress-bar').style.width = '100%';
 
-        if (data.md5_match !== undefined) {
-            const matchText = data.md5_match ? '✅ 校验通过' : '❌ 校验失败';
-            UIController.log('transfer-log-output', matchText, data.md5_match ? 'success' : 'error');
+        // 🔧 优化点 8: 显示详细统计信息
+        if (data.stats) {
+            const stats = data.stats;
+
+            // 显示速度统计
+            if (stats.average_speed_mbps) {
+                UIController.log('transfer-log-output',
+                    `📊 平均速度: ${stats.average_speed_mbps.toFixed(2)} Mbps`, 'info');
+            }
+            if (stats.max_speed_mbps) {
+                UIController.log('transfer-log-output',
+                    `⚡ 峰值速度: ${stats.max_speed_mbps.toFixed(2)} Mbps`, 'info');
+            }
+
+            // 显示传输时长
+            if (stats.total_time_seconds) {
+                const minutes = Math.floor(stats.total_time_seconds / 60);
+                const seconds = Math.floor(stats.total_time_seconds % 60);
+                UIController.log('transfer-log-output',
+                    `⏱️ 传输时长: ${minutes}:${seconds.toString().padStart(2, '0')}`, 'info');
+            }
+
+            // 显示网络质量
+            if (stats.network_quality_assessment) {
+                const qa = stats.network_quality_assessment;
+                const qualityMap = {
+                    'excellent': '优秀 ⭐⭐⭐⭐⭐',
+                    'good': '良好 ⭐⭐⭐⭐',
+                    'fair': '一般 ⭐⭐⭐',
+                    'poor': '较差 ⭐⭐'
+                };
+                UIController.log('transfer-log-output',
+                    `🌐 网络质量: ${qualityMap[qa.quality_level] || qa.quality_level}`, 'info');
+
+                if (qa.recommendations) {
+                    UIController.log('transfer-log-output',
+                        `💡 建议: ${qa.recommendations}`, 'warning');
+                }
+            }
+
+            // 显示网络分析
+            if (stats.network_analysis) {
+                const na = stats.network_analysis;
+                if (na.data_packet_loss_rate !== undefined) {
+                    UIController.log('transfer-log-output',
+                        `📉 丢包率: ${na.data_packet_loss_rate.toFixed(2)}%`, 'info');
+                }
+                if (na.network_transmission_efficiency !== undefined) {
+                    UIController.log('transfer-log-output',
+                        `📈 传输效率: ${na.network_transmission_efficiency.toFixed(2)}%`, 'info');
+                }
+            }
         }
 
-        if (data.networkQuality) {
-            const qualityMap = {
-                'excellent': '优秀',
-                'good': '良好',
-                'fair': '一般',
-                'poor': '较差'
-            };
-            UIController.log('transfer-log-output',
-                `网络质量: ${qualityMap[data.networkQuality] || data.networkQuality}`,
-                'info');
+        // MD5 校验结果
+        if (data.match !== undefined) {
+            const matchText = data.match ? '✅ MD5 校验通过' : '❌ MD5 校验失败';
+            const matchType = data.match ? 'success' : 'error';
+            UIController.log('transfer-log-output', matchText, matchType);
+
+            if (!data.match && data.sourceMD5 && data.receivedMD5) {
+                UIController.log('transfer-log-output',
+                    `期望: ${data.sourceMD5}`, 'info');
+                UIController.log('transfer-log-output',
+                    `实际: ${data.receivedMD5}`, 'info');
+            }
         }
 
-        // 新增: 显示速度统计
-        if (data.averageSpeed) {
-            UIController.log('transfer-log-output',
-                `平均速度: ${data.averageSpeed.toFixed(2)} Mbps`,
-                'success');
+        // 🔧 优化点 9: 3秒后自动隐藏进度条（可选）
+        setTimeout(() => {
+            const progressDiv = document.getElementById('transfer-progress');
+            if (progressDiv) {
+                // progressDiv.style.display = 'none'; // 如果想保留，注释这行
+            }
+        }, 3000);
+    },
+
+    handleError(data) {
+        const statusText = document.getElementById('transfer-status-text');
+        if (statusText) {
+            statusText.textContent = '❌ 传输失败';
+            statusText.style.color = '#ff4757';
         }
+
+        UIController.log('transfer-log-output',
+            `❌ 错误: ${data.error || '未知错误'}`, 'error');
     }
 };
 
@@ -644,4 +804,92 @@ document.addEventListener('DOMContentLoaded', () => {
     window.api.onFileTransferProgress((data) => FileTransferModule.handleProgress(data));
     window.api.onFileSendComplete((data) => FileTransferModule.handleComplete(data));
     window.api.onFileTransferComplete((data) => FileTransferModule.handleComplete(data));
+});
+
+// ==================== 页面加载完成后初始化 ====================
+document.addEventListener('DOMContentLoaded', () => {
+    UIController.showTab('info');
+    NetworkInfoModule.loadInterfaces();
+    PingModule.initChart();
+    ThroughputModule.initChart();
+
+    // 绑定后端事件
+    window.api.onPingReply((data) => PingModule.handleReply(data));
+    window.api.onScanStatus((data) => NetworkScanModule.handleStatus(data));
+    window.api.onScanDeviceFound((device) => NetworkScanModule.addDevice(device));
+    window.api.onTpData((speed) => ThroughputModule.handleData(speed));
+    window.api.onTpLog((msg) => UIController.log('tp-log', msg));
+    window.api.onTransferLog((msg) => UIController.log('transfer-log-output', msg));
+
+    // 🔧 修复点: 统一处理发送和接收进度
+    window.api.onFileSendProgress((data) => {
+        StateManager.transferMode = 'send'; // 确保模式正确
+        FileTransferModule.handleProgress(data);
+    });
+
+    window.api.onFileTransferProgress((data) => {
+        StateManager.transferMode = 'receive'; // 确保模式正确
+        FileTransferModule.handleProgress(data);
+    });
+
+    // 完成事件处理
+    window.api.onFileSendComplete((data) => {
+        FileTransferModule.handleComplete(data);
+    });
+
+    window.api.onFileTransferComplete((data) => {
+        FileTransferModule.handleComplete(data);
+    });
+
+    // 错误事件处理
+    window.api.onFileSendError((data) => {
+        FileTransferModule.handleError(data);
+    });
+
+    window.api.onFileTransferError((data) => {
+        FileTransferModule.handleError(data);
+    });
+
+    // 🔧 新增: 传输开始事件
+    window.api.onFileSendStart && window.api.onFileSendStart((data) => {
+        UIController.log('transfer-log-output',
+            `🚀 开始发送: ${data.fileName} (${(data.fileSize / 1024 / 1024).toFixed(2)} MB)`,
+            'info');
+
+        // 显示进度区域
+        const progressDiv = document.getElementById('transfer-progress');
+        if (progressDiv) {
+            progressDiv.style.display = 'block';
+        }
+
+        // 重置进度条
+        UIController.updateProgress('transfer-progress-bar', null, 0);
+        const statusText = document.getElementById('transfer-status-text');
+        if (statusText) {
+            statusText.textContent = '正在发送...';
+            statusText.style.color = '#e9ecef';
+        }
+    });
+
+    window.api.onFileTransferStart && window.api.onFileTransferStart((data) => {
+        UIController.log('transfer-log-output',
+            `📥 开始接收: ${data.fileName} (${(data.fileSize / 1024 / 1024).toFixed(2)} MB)`,
+            'info');
+
+        // 显示进度区域
+        const progressDiv = document.getElementById('transfer-progress');
+        if (progressDiv) {
+            progressDiv.style.display = 'block';
+        }
+
+        // 重置进度条
+        UIController.updateProgress('transfer-progress-bar', null, 0);
+        const statusText = document.getElementById('transfer-status-text');
+        if (statusText) {
+            statusText.textContent = '正在接收...';
+            statusText.style.color = '#e9ecef';
+        }
+    });
+
+    console.log('✅ NetTestTool Pro 已初始化');
 });

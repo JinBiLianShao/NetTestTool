@@ -1035,7 +1035,9 @@ const FileTransferModule = {
                 // 进度报告
                 const current = json.current || 0;
                 const total = json.total || 1;
-                const progress = json.percent || ((current / total) * 100);
+                // 🔧 修复: 确保进度不超过 100%，并处理边界情况
+                let progress = json.percent !== undefined ? json.percent : ((current / total) * 100);
+                progress = Math.min(100, Math.max(0, progress)); // 限制在 0-100
 
                 const payload = {
                     sent: isSend ? current : 0,
@@ -1043,7 +1045,7 @@ const FileTransferModule = {
                     total: total,
                     progress: progress,
                     speed: (json.speed_mbps || 0) / 8, // 转换为 MB/s
-                    remainingBytes: json.remaining_bytes || (total - current),
+                    remainingBytes: Math.max(0, json.remaining_bytes || (total - current)),
                     elapsedSeconds: json.elapsed_seconds || 0
                 };
 
