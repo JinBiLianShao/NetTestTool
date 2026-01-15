@@ -105,11 +105,11 @@ function getHruftPath() {
             const devPath = path.join(__dirname, 'bin', platform === 'darwin' ? 'mac' : platform, execName);
             if (fs.existsSync(devPath)) {
                 console.log(`[HRUFT] 使用开发路径: ${devPath}`);
-                return { path: devPath, command: execName };
+                return {path: devPath, command: execName};
             }
         }
 
-        return { path: null, command: execName };
+        return {path: null, command: execName};
     }
 
     // 设置执行权限 (Linux/Mac)
@@ -121,7 +121,7 @@ function getHruftPath() {
         }
     }
 
-    return { path: execPath, command: execName };
+    return {path: execPath, command: execName};
 }
 
 /**
@@ -359,7 +359,7 @@ const PingModule = {
 
     start: (config) => {
         PingModule.stop();
-        const { target, interval, size } = config;
+        const {target, interval, size} = config;
         const intervalMs = Math.max(100, interval * 1000);
 
         safeSend('ping-reply', `开始 Ping ${target}...\n`); // 使用 safeSend
@@ -372,9 +372,9 @@ const PingModule = {
                 cmd = `ping -c 1 -s ${size} ${target}`;
             }
 
-            const env = isWin ? process.env : { ...process.env, LC_ALL: 'C' };
+            const env = isWin ? process.env : {...process.env, LC_ALL: 'C'};
 
-            exec(cmd, { encoding: 'binary', env, timeout: 2000 }, (err, stdout, stderr) => {
+            exec(cmd, {encoding: 'binary', env, timeout: 2000}, (err, stdout, stderr) => {
                 const output = decodeOutput(Buffer.from(stdout, 'binary'));
                 let reply = '';
 
@@ -425,7 +425,7 @@ const ScanModule = {
         if (ScanModule.inProgress) return;
         ScanModule.inProgress = true;
 
-        const { ip, timeout } = config;
+        const {ip, timeout} = config;
 
         try {
             // 1. 计算网段
@@ -452,11 +452,11 @@ const ScanModule = {
 
                 const pingCmd = isWin
                     ? `ping -n 1 -w ${timeout} ${targetIp}`
-                    : `ping -c 1 -W ${timeout/1000} ${targetIp}`;
+                    : `ping -c 1 -W ${timeout / 1000} ${targetIp}`;
 
                 try {
                     await new Promise((resolve) => {
-                        exec(pingCmd, { timeout: timeout + 500 }, (err, stdout) => {
+                        exec(pingCmd, {timeout: timeout + 500}, (err, stdout) => {
                             scannedCount++;
 
                             // 🔧 修复点 1: 改进进度更新逻辑
@@ -562,36 +562,26 @@ const ThroughputModule = {
         return new Promise((resolve, reject) => {
             ThroughputModule.stopServer();
 
-            const { port, protocol, version } = config;
+            const {port, protocol, version} = config;
             const iperfPath = getIperfPath(version);
 
             if (!iperfPath) {
                 return resolve(`错误: ${version} 未找到`);
             }
 
-            const args = [];
-
-            if (version === 'iperf3') {
-                args.push('-s', '-p', port.toString());
-                if (protocol === 'udp') args.push('--udp');
-                args.push('--format', 'm'); // 使用 Mbits 格式
-            } else {
-                args.push('-s', '-p', port.toString());
-                if (protocol === 'udp') args.push('-u');
-                args.push('-f', 'm'); // 使用 Mbits 格式
+            const args = ['-s', '-p', port.toString(), '-i', '1'];
+            if (version === 'iperf2' && protocol === 'udp') {
+                args.push('-u');
             }
 
             const child = spawn(iperfPath, args);
             ThroughputModule.serverProcess = child;
 
-            // 初始化会话信息
+            // 修复点：确保 session 在进程启动瞬间初始化
             ThroughputModule.currentSession = {
                 role: 'server',
-                protocol: protocol.toUpperCase(),
-                version: version,
-                port: port,
                 startTime: Date.now(),
-                connections: []
+                version: version
             };
 
             let outputBuffer = '';
@@ -620,8 +610,11 @@ const ThroughputModule = {
                 safeSend('tp-log', formatted);
             });
 
-            child.on('close', code => {
-                const duration = Math.floor((Date.now() - ThroughputModule.currentSession.startTime) / 1000);
+            child.on('close', (code) => {
+                // 修复点：增加安全检查，防止读取 null
+                const session = ThroughputModule.currentSession;
+                const duration = session ? Math.floor((Date.now() - session.startTime) / 1000) : 0;
+
                 safeSend('tp-log', ThroughputModule.formatServerClose(code, duration));
                 ThroughputModule.serverProcess = null;
                 ThroughputModule.currentSession = null;
@@ -646,7 +639,7 @@ const ThroughputModule = {
     startClient: (config) => {
         ThroughputModule.stopClient();
 
-        const { ip, port, protocol, duration, bandwidth, version } = config;
+        const {ip, port, protocol, duration, bandwidth, version} = config;
         const iperfPath = getIperfPath(version);
 
         if (!iperfPath) {
@@ -654,7 +647,7 @@ const ThroughputModule = {
             return;
         }
 
-        // 初始化会话信息
+        // 修复点 1：必须在 spawn 之前初始化 session，防止 close 事件过快触发
         ThroughputModule.currentSession = {
             role: 'client',
             protocol: protocol.toUpperCase(),
@@ -665,21 +658,14 @@ const ThroughputModule = {
             intervals: []
         };
 
-        const args = [];
+        // 修复点 2：严格按照 iperf3 帮助文档格式构建参数
+        // Usage: iperf3 -c <host> -p <port> -t <time> -i 1 -f m
+        const args = ['-c', ip, '-p', port.toString(), '-t', duration.toString(), '-i', '1'];
 
-        if (version === 'iperf3') {
-            args.push('-c', ip, '-p', port.toString(), '-t', duration.toString());
-            if (protocol === 'udp') {
-                args.push('--udp', '-b', `${bandwidth}M`);
-            }
-            args.push('-i', '1'); // 每秒报告一次
-            args.push('--format', 'm'); // 使用 Mbits 格式
-        } else {
-            args.push('-c', ip, '-p', port.toString(), '-t', duration.toString(), '-i', '1');
-            if (protocol === 'udp') {
-                args.push('-u', '-b', `${bandwidth}M`);
-            }
-            args.push('-f', 'm'); // 使用 Mbits 格式
+        if (protocol === 'udp') {
+            args.push('-u');
+            // 修复点 3：-b 参数格式必须为 "10M" 这种紧凑格式
+            args.push('-b', `${bandwidth}M`);
         }
 
         const child = spawn(iperfPath, args);
@@ -715,9 +701,11 @@ const ThroughputModule = {
             safeSend('tp-log', formatted);
         });
 
-        child.on('close', code => {
+        child.on('close', (code) => {
+            // 修复点 4：安全读取 session
             const summary = ThroughputModule.formatClientClose(code);
             safeSend('tp-log', summary);
+
             ThroughputModule.clientProcess = null;
             ThroughputModule.currentSession = null;
         });
@@ -816,7 +804,7 @@ const ThroughputModule = {
     },
 
     formatClientStart: (config) => {
-        const { ip, port, protocol, duration, bandwidth, version } = config;
+        const {ip, port, protocol, duration, bandwidth, version} = config;
 
         let message = `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
         message += `🚀 开始测试\n`;
@@ -838,7 +826,7 @@ const ThroughputModule = {
 
     formatClientOutput: (line) => {
         line = line.trim();
-        if (!line) return { message: null, speed: null };
+        if (!line) return {message: null, speed: null};
 
         // 🔗 连接建立
         if (line.includes('Connecting to host')) {
@@ -924,19 +912,22 @@ const ThroughputModule = {
 
         // 🔚 分隔线
         if (line.match(/^-+$/)) {
-            return { message: null, speed: null };
+            return {message: null, speed: null};
         }
 
         // 其他信息
-        return { message: line, speed: null };
+        return {message: line, speed: null};
     },
 
     formatClientClose: (code) => {
+
         if (!ThroughputModule.currentSession) {
-            return code === 0 ? '✅ 测试完成' : `⚠️ 测试异常退出 (代码: ${code})`;
+            const session = ThroughputModule.currentSession;
+            if (!session) {
+                return code === 0 ? '✅ 测试完成' : `⚠️ 测试异常退出 (代码: ${code})`;
+            }
         }
 
-        const session = ThroughputModule.currentSession;
         const duration = Math.floor((Date.now() - session.startTime) / 1000);
 
         // 计算统计信息
@@ -1151,7 +1142,7 @@ const FileTransferModule = {
 
     startServer: (config) => {
         return new Promise((resolve) => {
-            const { port, savePath, protocol } = config;
+            const {port, savePath, protocol} = config;
             FileTransferModule.currentProtocol = protocol;
 
             if (protocol === 'hruft') {
@@ -1275,14 +1266,14 @@ const FileTransferModule = {
                             writeStream = fs.createWriteStream(path.join(savePath, fileName));
 
                             if (mainWindow) {
-                                mainWindow.webContents.send('file-transfer-start', { fileName, fileSize });
+                                mainWindow.webContents.send('file-transfer-start', {fileName, fileSize});
                             }
 
                             if (parts[1]) {
                                 writeStream.write(parts[1]);
                                 received += Buffer.byteLength(parts[1]);
                             }
-                        } catch(e) {
+                        } catch (e) {
                             console.error('[TCP] 元数据解析失败:', e);
                         }
                     }
@@ -1366,7 +1357,7 @@ const FileTransferModule = {
     handleHruftJson: (json, context) => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
 
-        const { mode } = context;
+        const {mode} = context;
         const isSend = mode === 'send';
 
         // 🔧 修复点 6: 适配新版 HRUFT 的 JSON 消息类型
