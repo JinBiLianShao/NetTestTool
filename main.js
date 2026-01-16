@@ -870,10 +870,10 @@ const ThroughputModule = {
             };
         }
 
-        // 📈 实时数据
-        const dataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
-        if (dataMatch) {
-            const [, id, start, end, transfer, bandwidth] = dataMatch;
+        // 📈 实时数据 - 优先匹配 iPerf2 格式（更简单）
+        const iperf2DataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
+        if (iperf2DataMatch) {
+            const [, id, start, end, transfer, bandwidth] = iperf2DataMatch;
             const interval = `${parseFloat(start).toFixed(0)}-${parseFloat(end).toFixed(0)}`;
 
             // 提取速度值
@@ -901,6 +901,41 @@ const ThroughputModule = {
 
             return {
                 message: `⏱️  ${interval}秒 | 📦 ${transfer.padEnd(12)} | ⚡ ${bandwidth}`,
+                speed: speedMbps ? speedMbps.toFixed(2) : null
+            };
+        }
+
+        // 📈 实时数据 - iPerf3 UDP 格式（带丢包率）
+        const detailedDataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+([\d\.]+\s+ms)\s+([\d\.]+)\/([\d\.]+)\s+\(([\d\.]+)%\)/);
+        if (detailedDataMatch) {
+            const [, id, start, end, transfer, bandwidth, jitter, lost, total, lossRate] = detailedDataMatch;
+            const interval = `${parseFloat(start).toFixed(0)}-${parseFloat(end).toFixed(0)}`;
+
+            // 提取速度值
+            const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
+            let speedMbps = null;
+
+            if (speedMatch) {
+                const speed = parseFloat(speedMatch[1]);
+                const unit = speedMatch[2];
+                speedMbps = speed;
+
+                if (unit === 'G') speedMbps = speed * 1000;
+                else if (unit === 'K') speedMbps = speed / 1000;
+            }
+
+            // 记录到会话
+            if (ThroughputModule.currentSession) {
+                ThroughputModule.currentSession.intervals.push({
+                    interval: `${start}-${end}`,
+                    transfer: transfer,
+                    bandwidth: bandwidth,
+                    speed: speedMbps
+                });
+            }
+
+            return {
+                message: `⏱️  ${interval}秒 | 📦 ${transfer.padEnd(12)} | ⚡ ${bandwidth} | 📉 丢包率: ${lossRate}%`,
                 speed: speedMbps ? speedMbps.toFixed(2) : null
             };
         }
