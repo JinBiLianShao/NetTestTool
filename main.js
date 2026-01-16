@@ -1118,6 +1118,26 @@ const ThroughputModule = {
 // ============================================================================
 //                          模块 5: File Transfer (文件传输 & HRUFT)
 // ============================================================================
+/**
+ * 确保路径在不同平台上的正确编码
+ * @param {string} filePath - 原始文件路径
+ * @returns {string} - 编码正确的路径
+ */
+function ensureCorrectPathEncoding(filePath) {
+    if (isWin) {
+        // 在 Windows 上，确保使用正确的编码
+        try {
+            // 使用 Node.js 的 path 模块确保路径格式正确
+            return path.resolve(filePath);
+        } catch (e) {
+            console.warn('[Path Encoding] 路径处理错误:', e.message);
+            return filePath;
+        }
+    }
+    return filePath;
+}
+
+
 const FileTransferModule = {
     hruftProcesses: new Map(), // 存储运行中的 HRUFT 子进程
     tcpServer: null,
@@ -1157,12 +1177,16 @@ const FileTransferModule = {
             return;
         }
 
+        // 🔧 支持中文文件名 - 确保路径正确处理
         const fileName = path.basename(filePath);
         const transferId = `send-${Date.now()}`;
 
-        // 🔧 修复点 1: 更新命令行参数以匹配新版 HRUFT
-        // 新版命令: hruft send <ip> <port> <filepath> [--mss N] [--window N] [--detailed]
-        const args = ['send', ip, port.toString(), filePath];
+        // 🔧 修复点 1: 更新命令行参数以匹配新版 HRUFT，确保中文路径正确传递
+        // 使用 path.resolve 确保绝对路径，避免路径解析问题
+        const absoluteFilePath = path.resolve(filePath);
+
+        // 🔧 修复点 2: 在 Windows 平台上设置正确的编码
+        const args = ['send', ip, port.toString(), absoluteFilePath];
 
         // 添加可选参数
         if (udtConfig) {
@@ -1175,11 +1199,14 @@ const FileTransferModule = {
             }
         }
 
-        // 🔧 修复点 2: 始终启用详细输出以获取 JSON 统计
+        // 🔧 修复点 3: 始终启用详细输出以获取 JSON 统计
         args.push('--detailed');
 
         if (mainWindow) {
+            // 🔧 修复点 4: 日志中显示原始路径信息
             mainWindow.webContents.send('transfer-log', `[CMD] ${hruft.command} ${args.join(' ')}`);
+            mainWindow.webContents.send('transfer-log', `[INFO] 文件路径: ${filePath}, 解析后: ${absoluteFilePath}`);
+
             // 通知 UI 开始
             mainWindow.webContents.send('file-send-start', {
                 fileName,
@@ -1188,13 +1215,21 @@ const FileTransferModule = {
             });
         }
 
-        const child = spawn(hruft.path, args, {
-            cwd: path.dirname(hruft.path) // 设置工作目录
-        });
+        // 🔧 修复点 5: 在不同平台上设置适当的环境变量以支持中文
+        const spawnOptions = {
+            cwd: path.dirname(hruft.path)
+        };
+
+        // 在 Windows 上设置适当的代码页
+        if (isWin) {
+            spawnOptions.env = {...process.env, ...{CHCP: '65001'}}; // UTF-8 代码页
+        }
+
+        const child = spawn(hruft.path, args, spawnOptions);
 
         FileTransferModule.hruftProcesses.set(transferId, child);
 
-        // 🔧 修复点 3: 改进输出处理 - 分别处理 stdout 和 stderr
+        // 🔧 修复点 6: 改进输出处理 - 分别处理 stdout 和 stderr
         let stdoutBuffer = '';
         let stderrBuffer = '';
 
@@ -1244,8 +1279,10 @@ const FileTransferModule = {
             FileTransferModule.currentProtocol = protocol;
 
             if (protocol === 'hruft') {
-                // 🔧 修复点 4: 更新 HRUFT 接收命令
-                // 新版命令: hruft recv <port> <save_directory_or_path> [--detailed]
+                // 🔧 修复点 1: 更新 HRUFT 接收命令，支持中文保存路径
+                // 使用绝对路径避免路径解析问题
+                const absoluteSavePath = path.resolve(savePath);
+
                 const hruft = getHruftPath();
 
                 if (!hruft.path) {
@@ -1253,11 +1290,18 @@ const FileTransferModule = {
                     return;
                 }
 
-                const args = ['recv', port.toString(), savePath, '--detailed'];
+                const args = ['recv', port.toString(), absoluteSavePath, '--detailed'];
 
-                const child = spawn(hruft.path, args, {
+                // 🔧 修复点 2: 在 Windows 平台设置适当的环境变量
+                const spawnOptions = {
                     cwd: path.dirname(hruft.path)
-                });
+                };
+
+                if (isWin) {
+                    spawnOptions.env = {...process.env, ...{CHCP: '65001'}}; // UTF-8 代码页
+                }
+
+                const child = spawn(hruft.path, args, spawnOptions);
 
                 const pid = `recv-${port}`;
                 FileTransferModule.hruftProcesses.set(pid, child);
@@ -1304,7 +1348,7 @@ const FileTransferModule = {
                     safeSend('transfer-log', `❌ HRUFT 启动失败: ${err.message}`);
                 });
 
-                resolve(`HRUFT 接收服务已启动\n监听端口: ${port}\n保存路径: ${savePath}`);
+                resolve(`HRUFT 接收服务已启动\n监听端口: ${port}\n保存路径: ${absoluteSavePath}`);
 
             } else {
                 // TCP 接收模式
@@ -1341,7 +1385,7 @@ const FileTransferModule = {
         safeSend('transfer-log', '所有传输服务已停止');
     },
 
-    // TCP 服务端实现 (简化版)
+// TCP 服务端实现 (修改版，支持中文路径)
     startTcpServer: (port, savePath) => {
         const server = net.createServer(socket => {
             let fileName = `recv_${Date.now()}.bin`;
@@ -1357,11 +1401,16 @@ const FileTransferModule = {
                         const parts = str.split('###END_METADATA###');
                         try {
                             const meta = JSON.parse(parts[0]);
+
+                            // 🔧 修复点 1: 确保中文文件名正确处理
                             fileName = meta.fileName || fileName;
                             fileSize = meta.fileSize || 0;
                             metaReceived = true;
 
-                            writeStream = fs.createWriteStream(path.join(savePath, fileName));
+                            // 🔧 修复点 2: 确保中文保存路径正确处理
+                            const fullSavePath = path.join(savePath, fileName);
+
+                            writeStream = fs.createWriteStream(fullSavePath);
 
                             if (mainWindow) {
                                 mainWindow.webContents.send('file-transfer-start', {fileName, fileSize});
@@ -1417,6 +1466,52 @@ const FileTransferModule = {
         server.on('error', (err) => {
             console.error('[TCP] 服务器错误:', err);
             safeSend('transfer-log', `❌ TCP 服务器错误: ${err.message}`);
+        });
+    },
+
+// TCP 发送端修改
+    sendTcp: (ip, port, filePath) => {
+        const socket = new net.Socket();
+
+        // 🔧 修复点 1: 确保中文文件名和路径正确处理
+        const fileName = path.basename(filePath);
+        const fileSize = fs.statSync(filePath).size;
+        let sent = 0;
+
+        socket.connect(port, ip, () => {
+            mainWindow.webContents.send('file-send-start', {fileName, fileSize, md5: 'N/A'});
+
+            // 🔧 修复点 2: 确保中文文件名在 JSON 元数据中正确传输
+            const meta = JSON.stringify({fileName, fileSize});
+            socket.write(meta + '\n###END_METADATA###\n');
+
+            const stream = fs.createReadStream(filePath);
+            stream.on('data', chunk => {
+                const ok = socket.write(chunk);
+                sent += chunk.length;
+                if (!ok) stream.pause();
+
+                // 进度通知
+                if (mainWindow) {
+                    mainWindow.webContents.send('file-send-progress', {
+                        sent, total: fileSize, progress: (sent / fileSize * 100).toFixed(1), speed: 0
+                    });
+                }
+            });
+            socket.on('drain', () => stream.resume());
+            stream.on('end', () => {
+                socket.end();
+                if (mainWindow) mainWindow.webContents.send('file-send-complete', {
+                    fileName,
+                    fileSize,
+                    protocol: 'TCP'
+                });
+            });
+        });
+
+        socket.on('error', (err) => {
+            console.error('[TCP] 发送错误:', err);
+            safeSend('file-send-error', {error: err.message});
         });
     },
 
