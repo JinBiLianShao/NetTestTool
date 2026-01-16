@@ -317,12 +317,6 @@ function setupIpcHandlers() {
     ipcMain.on('net:tp-server-stop', () => ThroughputModule.stopServer());
     ipcMain.on('net:tp-client-start', (e, c) => ThroughputModule.startClient(c));
     ipcMain.on('net:tp-stop', () => ThroughputModule.stopClient());
-    // 添加测试完成事件处理器
-    ipcMain.handle('net:tp-test-completed', (event, data) => {
-        // 处理测试完成事件
-        console.log('测试完成:', data);
-    });
-
 
     // 5. 文件传输 (TCP & HRUFT)
     ipcMain.handle('file:select-save-path', FileTransferModule.selectSavePath);
@@ -575,7 +569,7 @@ const ThroughputModule = {
                 return resolve(`错误: ${version} 未找到`);
             }
 
-            const args = ['-s', '-p', port.toString(), '-i', '1', '-f', 'm']; // 添加 -f m 以获取兆位单位
+            const args = ['-s', '-p', port.toString(), '-i', '1'];
             if (version === 'iperf2' && protocol === 'udp') {
                 args.push('-u');
             }
@@ -607,14 +601,6 @@ const ThroughputModule = {
                         safeSend('tp-log', formatted);
                         isFirstOutput = false;
                     }
-
-                    // 检测测试完成标志 - 更精确的检测逻辑
-                    if (line.includes('sender') || line.includes('receiver')) {
-                        // 测试完成后自动停止服务端
-                        setTimeout(() => {
-                            ThroughputModule.stopServer();
-                        }, 1000); // 延迟停止，确保所有数据都已处理
-                    }
                 });
             });
 
@@ -630,13 +616,6 @@ const ThroughputModule = {
                 const duration = session ? Math.floor((Date.now() - session.startTime) / 1000) : 0;
 
                 safeSend('tp-log', ThroughputModule.formatServerClose(code, duration));
-
-                // 发送测试完成信号
-                safeSend('tp-test-completed', {
-                    success: code === 0,
-                    message: code === 0 ? '测试正常完成' : `测试异常退出 (代码: ${code})`
-                });
-
                 ThroughputModule.serverProcess = null;
                 ThroughputModule.currentSession = null;
             });
@@ -775,16 +754,15 @@ const ThroughputModule = {
             }
         }
 
-        // 📋 表头
+        // 📋 表头 - 保留原始输出
         if (line.includes('Interval') && line.includes('Transfer') && line.includes('Bandwidth')) {
-            return `\n📊 实时数据流\n${'─'.repeat(120)}`;
+            return line;
         }
 
-        // 📈 实时数据 (iPerf3 完整格式，包含丢包率)
+        // 📈 实时数据 (包含丢包率) - 返回原始输出但提取速度值
         const detailedDataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+([\d\.]+\s+ms)\s+([\d\.]+)\/([\d\.]+)\s+\(([\d\.]+)%\)/);
         if (detailedDataMatch) {
             const [, id, start, end, transfer, bandwidth, jitter, lost, total, lossRate] = detailedDataMatch;
-            const interval = `${parseFloat(start).toFixed(2)}-${parseFloat(end).toFixed(2)}`;
 
             // 提取速度值用于图表
             const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
@@ -800,14 +778,14 @@ const ThroughputModule = {
                 safeSend('tp-data', speedMbps.toFixed(2));
             }
 
-            return `⏱️  ${interval}秒 | 📦 ${transfer.padEnd(12)} | ⚡ ${bandwidth} | 📉 丢包率: ${lossRate}% (${lost}/${total})`;
+            // 返回原始输出
+            return line;
         }
 
-        // 📈 实时数据 (iPerf2/3 基本格式)
+        // 📈 实时数据 (基本格式) - 返回原始输出但提取速度值
         const basicDataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
         if (basicDataMatch && !detailedDataMatch) {
             const [, id, start, end, transfer, bandwidth] = basicDataMatch;
-            const interval = `${parseFloat(start).toFixed(0)}-${parseFloat(end).toFixed(0)}`;
 
             // 提取速度值用于图表
             const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
@@ -823,25 +801,17 @@ const ThroughputModule = {
                 safeSend('tp-data', speedMbps.toFixed(2));
             }
 
-            return `⏱️  ${interval}秒 | 📦 ${transfer.padEnd(12)} | ⚡ ${bandwidth}`;
+            // 返回原始输出
+            return line;
         }
 
-        // 📊 最终汇总 - 检测测试完成
+        // 📊 最终汇总
         if (line.includes('sender') || line.includes('receiver')) {
             const summaryMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+(sender|receiver)/);
             if (summaryMatch) {
                 const [, id, start, end, transfer, bandwidth, role] = summaryMatch;
                 const roleIcon = role === 'sender' ? '📤' : '📥';
                 const roleText = role === 'sender' ? '发送端' : '接收端';
-
-                // 在测试结束后发送信号给前端
-                setTimeout(() => {
-                    // 发送结束信号到前端
-                    safeSend('tp-test-completed', {
-                        success: true,
-                        message: '测试已完成'
-                    });
-                }, 100); // 延迟确保数据发送完成
 
                 return `\n${'━'.repeat(60)}\n${roleIcon} ${roleText}汇总 (${start}-${end}秒)\n   总传输: ${transfer}\n   平均速度: ${bandwidth}\n${'━'.repeat(60)}`;
             }
@@ -892,19 +862,18 @@ const ThroughputModule = {
             }
         }
 
-        // 📋 表头
+        // 📋 表头 - 返回原始输出
         if (line.includes('Interval') && line.includes('Transfer') && line.includes('Bandwidth')) {
             return {
-                message: `\n📊 测试数据\n${'─'.repeat(60)}`,
+                message: line,
                 speed: null
             };
         }
 
-        // 📈 实时数据 - 优先匹配 iPerf2 格式（更简单）
+        // 📈 实时数据 - 返回原始输出但提取速度值
         const iperf2DataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
         if (iperf2DataMatch) {
             const [, id, start, end, transfer, bandwidth] = iperf2DataMatch;
-            const interval = `${parseFloat(start).toFixed(0)}-${parseFloat(end).toFixed(0)}`;
 
             // 提取速度值
             const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
@@ -917,9 +886,6 @@ const ThroughputModule = {
 
                 if (unit === 'G') speedMbps = speed * 1000;
                 else if (unit === 'K') speedMbps = speed / 1000;
-
-                // 发送速度数据到图表
-                safeSend('tp-data', speedMbps.toFixed(2));
             }
 
             // 记录到会话
@@ -932,17 +898,17 @@ const ThroughputModule = {
                 });
             }
 
+            // 返回原始输出
             return {
-                message: `⏱️  ${interval}秒 | 📦 ${transfer.padEnd(12)} | ⚡ ${bandwidth}`,
+                message: line,
                 speed: speedMbps ? speedMbps.toFixed(2) : null
             };
         }
 
-        // 📈 实时数据 - iPerf3 UDP 格式（带丢包率）
+        // 📈 实时数据 - iPerf3 UDP 格式（带丢包率）- 返回原始输出但提取速度值
         const detailedDataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+([\d\.]+\s+ms)\s+([\d\.]+)\/([\d\.]+)\s+\(([\d\.]+)%\)/);
         if (detailedDataMatch) {
             const [, id, start, end, transfer, bandwidth, jitter, lost, total, lossRate] = detailedDataMatch;
-            const interval = `${parseFloat(start).toFixed(0)}-${parseFloat(end).toFixed(0)}`;
 
             // 提取速度值
             const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
@@ -955,9 +921,6 @@ const ThroughputModule = {
 
                 if (unit === 'G') speedMbps = speed * 1000;
                 else if (unit === 'K') speedMbps = speed / 1000;
-
-                // 发送速度数据到图表
-                safeSend('tp-data', speedMbps.toFixed(2));
             }
 
             // 记录到会话
@@ -970,8 +933,9 @@ const ThroughputModule = {
                 });
             }
 
+            // 返回原始输出
             return {
-                message: `⏱️  ${interval}秒 | 📦 ${transfer.padEnd(12)} | ⚡ ${bandwidth} | 📉 丢包率: ${lossRate}%`,
+                message: line,
                 speed: speedMbps ? speedMbps.toFixed(2) : null
             };
         }
@@ -1050,7 +1014,7 @@ const ThroughputModule = {
             return {message: null, speed: null};
         }
 
-        // 其他信息
+        // 其他信息 - 返回原始输出
         return {message: line, speed: null};
     },
 

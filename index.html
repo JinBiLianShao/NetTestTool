@@ -211,7 +211,6 @@
                     <div class="input-group flex-1">
                         <label>iPerf 版本</label>
                         <select id="tp-server-version">
-                            <option value="iperf3">iPerf 3</option>
                             <option value="iperf2">iPerf 2</option>
                         </select>
                     </div>
@@ -252,7 +251,6 @@
                     <div class="input-group flex-1">
                         <label>iPerf 版本</label>
                         <select id="tp-client-version">
-                            <option value="iperf3">iPerf 3</option>
                             <option value="iperf2">iPerf 2</option>
                         </select>
                     </div>
@@ -260,6 +258,14 @@
                         <span>🚀</span> 开始测试
                     </button>
                 </div>
+            </div>
+
+            <div class="console-card">
+                <div class="console-header">
+                    <span>📄 iPerf 输出</span>
+                    <button class="btn-icon" onclick="clearConsole('tp-log')">清空</button>
+                </div>
+                <div class="console-output" id="tp-log"></div>
             </div>
 
             <div class="chart-card">
@@ -275,13 +281,7 @@
                 </div>
             </div>
 
-            <div class="console-card">
-                <div class="console-header">
-                    <span>📄 iPerf 输出</span>
-                    <button class="btn-icon" onclick="clearConsole('tp-log')">清空</button>
-                </div>
-                <div class="console-output" id="tp-log"></div>
-            </div>
+
         </section>
 
         <!-- ===== 文件传输模块 (HRUFT) ===== -->
