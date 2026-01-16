@@ -755,14 +755,37 @@ const ThroughputModule = {
         }
 
         // 📋 表头
-        if (line.includes('Interval') && line.includes('Transfer') && line.includes('Bandwidth')) {
-            return `\n📊 实时数据流\n${'─'.repeat(60)}`;
+        if (line.includes('Interval') && line.includes('Transfer') && line.includes('Bandwidth') && line.includes('Jitter') && line.includes('Lost/Total Datagrams')) {
+            return `\n📊 实时数据流\n${'─'.repeat(120)}`;
         }
 
-        // 📈 实时数据 (每秒)
-        const dataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
-        if (dataMatch) {
-            const [, id, start, end, transfer, bandwidth] = dataMatch;
+        // 📈 实时数据 (包含丢包率) - 修复版：支持 iPerf3 完整格式
+        const detailedDataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+([\d\.]+\s+ms)\s+([\d\.]+)\/([\d\.]+)\s+\(([\d\.]+)%\)/);
+        if (detailedDataMatch) {
+            const [, id, start, end, transfer, bandwidth, jitter, lost, total, lossRate] = detailedDataMatch;
+            const interval = `${parseFloat(start).toFixed(2)}-${parseFloat(end).toFixed(2)}`;
+
+            // 提取速度值用于图表
+            const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
+            if (speedMatch) {
+                const speed = parseFloat(speedMatch[1]);
+                const unit = speedMatch[2];
+                let speedMbps = speed;
+
+                if (unit === 'G') speedMbps = speed * 1000;
+                else if (unit === 'K') speedMbps = speed / 1000;
+
+                // 发送速度数据到图表
+                safeSend('tp-data', speedMbps.toFixed(2));
+            }
+
+            return `⏱️  ${interval}秒 | 📦 ${transfer.padEnd(12)} | ⚡ ${bandwidth} | 📉 丢包率: ${lossRate}% (${lost}/${total})`;
+        }
+
+        // 📈 实时数据 (基本格式) - 保持向后兼容
+        const basicDataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
+        if (basicDataMatch && !detailedDataMatch) {
+            const [, id, start, end, transfer, bandwidth] = basicDataMatch;
             const interval = `${parseFloat(start).toFixed(0)}-${parseFloat(end).toFixed(0)}`;
 
             // 提取速度值用于图表
@@ -897,16 +920,57 @@ const ThroughputModule = {
             }
         }
 
-        // UDP 特有的丢包信息
-        if (line.includes('datagrams')) {
-            const lossMatch = line.match(/([\d\.]+)%/);
-            if (lossMatch) {
-                const lossRate = parseFloat(lossMatch[1]);
+        // UDP 特有的丢包信息（增强版）
+        const currentProtocol = ThroughputModule.currentSession?.protocol;
+        if (currentProtocol === 'UDP' && (line.includes('datagrams') || line.includes('Jitter') || line.includes('Lost'))) {
+            // 匹配 iPerf2 UDP 输出格式: [ID] Interval       Transfer     Bandwidth        Jitter   Lost/Drop
+            const udpMatch = line.match(/\[\s*\d+\]\s+[\d\.]+-[\d\.]+\s+sec\s+[\d\.]+\s+\w+Bytes\s+[\d\.]+\s+\w+bits\/sec\s+[\d\.]+\s+ms\s+([\d\.]+)\/(\d+)\s+\(([\d\.]+)%\)/);
+            if (udpMatch) {
+                const lostPackets = udpMatch[1];
+                const totalPackets = udpMatch[2];
+                const lossRate = parseFloat(udpMatch[3]);
+                const emoji = lossRate < 1 ? '✅' : lossRate < 5 ? '⚠️' : '❌';
+                return {
+                    message: `${emoji} UDP 丢包率: ${lossRate}% (${lostPackets}/${totalPackets})`,
+                    speed: null
+                };
+            }
+
+            // 匹配 iPerf3 UDP 输出格式: [SUM] 0.00-10.00 sec 1.00 MBytes  838 Kbits/sec 0.000 ms  0/878 (0%)
+            const iperf3UdpMatch = line.match(/[\d\.]+\/[\d\.]+\s+\(([\d\.]+)%\)/);
+            if (iperf3UdpMatch) {
+                const lossRate = parseFloat(iperf3UdpMatch[1]);
                 const emoji = lossRate < 1 ? '✅' : lossRate < 5 ? '⚠️' : '❌';
                 return {
                     message: `${emoji} UDP 丢包率: ${lossRate}%`,
                     speed: null
                 };
+            }
+
+            // 匹配更通用的丢包率模式
+            const generalLossMatch = line.match(/([\d\.]+)%\s*(?:packet\s*)?loss|loss:\s*([\d\.]+)%|dropped:\s*([\d\.]+)%/i);
+            if (generalLossMatch) {
+                const lossRate = parseFloat(generalLossMatch[1] || generalLossMatch[2] || generalLossMatch[3]);
+                const emoji = lossRate < 1 ? '✅' : lossRate < 5 ? '⚠️' : '❌';
+                return {
+                    message: `${emoji} UDP 丢包率: ${lossRate}%`,
+                    speed: null
+                };
+            }
+
+            // 匹配 iPerf3 传输摘要中的丢包信息
+            if (line.includes('sender') || line.includes('receiver')) {
+                const summaryLossMatch = line.match(/\[\s*\d+\]\s+[\d\.]+-[\d\.]+\s+sec\s+[\d\.]+\s+\w+Bytes\s+[\d\.]+\s+\w+bits\/sec\s+[\d\.]+\s+ms\s+([\d\.]+)\/(\d+)\s+\(([\d\.]+)%\)/);
+                if (summaryLossMatch) {
+                    const lostPackets = summaryLossMatch[1];
+                    const totalPackets = summaryLossMatch[2];
+                    const lossRate = parseFloat(summaryLossMatch[3]);
+                    const emoji = lossRate < 1 ? '✅' : lossRate < 5 ? '⚠️' : '❌';
+                    return {
+                        message: `${emoji} UDP 丢包率: ${lossRate}% (${lostPackets}/${totalPackets})`,
+                        speed: null
+                    };
+                }
             }
         }
 
@@ -920,12 +984,9 @@ const ThroughputModule = {
     },
 
     formatClientClose: (code) => {
-
-        if (!ThroughputModule.currentSession) {
-            const session = ThroughputModule.currentSession;
-            if (!session) {
-                return code === 0 ? '✅ 测试完成' : `⚠️ 测试异常退出 (代码: ${code})`;
-            }
+        const session = ThroughputModule.currentSession;
+        if (!session) {
+            return code === 0 ? '✅ 测试完成' : `⚠️ 测试异常退出 (代码: ${code})`;
         }
 
         const duration = Math.floor((Date.now() - session.startTime) / 1000);
@@ -1016,6 +1077,8 @@ const ThroughputModule = {
         ThroughputModule.stopServer();
     }
 };
+
+
 
 // ============================================================================
 //                          模块 5: File Transfer (文件传输 & HRUFT)

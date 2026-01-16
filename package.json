@@ -1,6 +1,6 @@
 {
   "name": "net-test-tool-pro",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "专业网络测试工具 - 集成HRUFT可靠UDP传输",
   "main": "main.js",
   "author": "NetTestTool Team",
