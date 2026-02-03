@@ -763,13 +763,20 @@ const FileTransferModule = {
             }
         }
 
-        // MD5 校验结果
+        // 🔧 修改哈希校验显示（从 MD5 改为哈希）
         if (data.match !== undefined) {
-            const matchText = data.match ? '✅ MD5 校验通过' : '❌ MD5 校验失败';
+            const matchText = data.match ? '✅ 哈希校验通过' : '❌ 哈希校验失败';
             const matchType = data.match ? 'success' : 'error';
             UIController.log('transfer-log-output', matchText, matchType);
 
-            if (!data.match && data.sourceMD5 && data.receivedMD5) {
+            // 🔧 修改字段名从 MD5 改为 hash
+            if (!data.match && data.sourceHash && data.receivedHash) {
+                UIController.log('transfer-log-output',
+                    `期望: ${data.sourceHash}`, 'info');
+                UIController.log('transfer-log-output',
+                    `实际: ${data.receivedHash}`, 'info');
+            } else if (!data.match && data.sourceMD5 && data.receivedMD5) {
+                // 保持向后兼容
                 UIController.log('transfer-log-output',
                     `期望: ${data.sourceMD5}`, 'info');
                 UIController.log('transfer-log-output',

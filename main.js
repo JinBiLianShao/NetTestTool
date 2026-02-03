@@ -1114,7 +1114,6 @@ const ThroughputModule = {
 };
 
 
-
 // ============================================================================
 //                          模块 5: File Transfer (文件传输 & HRUFT)
 // ============================================================================
@@ -1177,66 +1176,59 @@ const FileTransferModule = {
             return;
         }
 
-        // 🔧 支持中文文件名 - 确保路径正确处理
+        // 支持中文文件名 - 确保路径正确处理
         const fileName = path.basename(filePath);
         const transferId = `send-${Date.now()}`;
-
-        // 🔧 修复点 1: 更新命令行参数以匹配新版 HRUFT，确保中文路径正确传递
-        // 使用 path.resolve 确保绝对路径，避免路径解析问题
         const absoluteFilePath = path.resolve(filePath);
 
-        // 🔧 修复点 2: 在 Windows 平台上设置正确的编码
+        // 🔧 更新参数以匹配新版 HRUFT
         const args = ['send', ip, port.toString(), absoluteFilePath];
 
-        // 添加可选参数
+        // 添加可选参数 (适配新版参数名)
         if (udtConfig) {
             if (udtConfig.packetSize) {
                 args.push('--mss', udtConfig.packetSize.toString());
             }
             if (udtConfig.windowSize) {
-                // 窗口大小单位为字节
+                // 新版 HRUFT 使用 --window 参数，单位为字节
                 args.push('--window', udtConfig.windowSize.toString());
             }
         }
 
-        // 🔧 修复点 3: 始终启用详细输出以获取 JSON 统计
+        // 🔧 启用详细输出以获取 JSON 统计
         args.push('--detailed');
 
         if (mainWindow) {
-            // 🔧 修复点 4: 日志中显示原始路径信息
             mainWindow.webContents.send('transfer-log', `[CMD] ${hruft.command} ${args.join(' ')}`);
-            mainWindow.webContents.send('transfer-log', `[INFO] 文件路径: ${filePath}, 解析后: ${absoluteFilePath}`);
-
-            // 通知 UI 开始
+            mainWindow.webContents.send('transfer-log', `[INFO] 使用 BLAKE3 哈希算法 (HRUFT Pro)`);
             mainWindow.webContents.send('file-send-start', {
                 fileName,
                 fileSize: fs.statSync(filePath).size,
-                md5: '计算中(HRUFT)...'
+                hash: '计算中(BLAKE3)...' // 修改为哈希而不是 MD5
             });
         }
 
-        // 🔧 修复点 5: 在不同平台上设置适当的环境变量以支持中文
+        // 设置环境变量
         const spawnOptions = {
             cwd: path.dirname(hruft.path)
         };
 
-        // 在 Windows 上设置适当的代码页
+        // 在 Windows 上设置 UTF-8 代码页
         if (isWin) {
-            spawnOptions.env = {...process.env, ...{CHCP: '65001'}}; // UTF-8 代码页
+            spawnOptions.env = {...process.env, CHCP: '65001'};
         }
 
         const child = spawn(hruft.path, args, spawnOptions);
-
         FileTransferModule.hruftProcesses.set(transferId, child);
 
-        // 🔧 修复点 6: 改进输出处理 - 分别处理 stdout 和 stderr
+        // 处理输出
         let stdoutBuffer = '';
         let stderrBuffer = '';
 
         child.stdout.on('data', (data) => {
             stdoutBuffer += data.toString();
             const lines = stdoutBuffer.split('\n');
-            stdoutBuffer = lines.pop() || ''; // 保留不完整的行
+            stdoutBuffer = lines.pop() || '';
 
             lines.forEach(line => {
                 FileTransferModule.parseHruftOutput(line, {mode: 'send', fileName});
@@ -1250,14 +1242,13 @@ const FileTransferModule = {
 
             lines.forEach(line => {
                 if (line.trim()) {
-                    safeSend('transfer-log', `[HRUFT Log] ${line.trim()}`);
+                    safeSend('transfer-log', `[HRUFT 错误] ${line.trim()}`);
                 }
             });
         });
 
         child.on('close', (code) => {
             FileTransferModule.hruftProcesses.delete(transferId);
-
             if (code === 0) {
                 safeSend('transfer-log', '✅ HRUFT 发送完成');
             } else {
@@ -1279,10 +1270,7 @@ const FileTransferModule = {
             FileTransferModule.currentProtocol = protocol;
 
             if (protocol === 'hruft') {
-                // 🔧 修复点 1: 更新 HRUFT 接收命令，支持中文保存路径
-                // 使用绝对路径避免路径解析问题
                 const absoluteSavePath = path.resolve(savePath);
-
                 const hruft = getHruftPath();
 
                 if (!hruft.path) {
@@ -1290,19 +1278,18 @@ const FileTransferModule = {
                     return;
                 }
 
+                // 🔧 更新接收命令参数
                 const args = ['recv', port.toString(), absoluteSavePath, '--detailed'];
 
-                // 🔧 修复点 2: 在 Windows 平台设置适当的环境变量
                 const spawnOptions = {
                     cwd: path.dirname(hruft.path)
                 };
 
                 if (isWin) {
-                    spawnOptions.env = {...process.env, ...{CHCP: '65001'}}; // UTF-8 代码页
+                    spawnOptions.env = {...process.env, CHCP: '65001'};
                 }
 
                 const child = spawn(hruft.path, args, spawnOptions);
-
                 const pid = `recv-${port}`;
                 FileTransferModule.hruftProcesses.set(pid, child);
 
@@ -1348,10 +1335,9 @@ const FileTransferModule = {
                     safeSend('transfer-log', `❌ HRUFT 启动失败: ${err.message}`);
                 });
 
-                resolve(`HRUFT 接收服务已启动\n监听端口: ${port}\n保存路径: ${absoluteSavePath}`);
-
+                resolve(`HRUFT Pro (BLAKE3) 接收服务已启动\n监听端口: ${port}\n保存路径: ${absoluteSavePath}`);
             } else {
-                // TCP 接收模式
+                // TCP 接收模式保持不变
                 FileTransferModule.startTcpServer(port, savePath);
                 resolve(`TCP 接收服务已启动\n监听端口: ${port}\n保存路径: ${savePath}`);
             }
@@ -1532,118 +1518,116 @@ const FileTransferModule = {
         line = line.trim();
         if (!line) return;
 
-        // 🔧 修复点 5: 改进 JSON 解析 - 处理新版 HRUFT 的输出格式
-        if (line.startsWith('{') && line.endsWith('}')) {
-            try {
+        // 🔧 处理新版 HRUFT 输出格式
+        try {
+            // 尝试解析 JSON (新版 HRUFT 输出 JSON 格式)
+            if (line.startsWith('{') || line.startsWith('[')) {
                 const json = JSON.parse(line);
                 FileTransferModule.handleHruftJson(json, context);
-            } catch (e) {
-                // 不是有效的 JSON,作为普通日志输出
+                return;
+            }
+
+            // 处理普通文本输出
+            if (line.includes('[INFO]') || line.includes('[ERROR]') || line.includes('[WARNING]')) {
+                // 提取有意义的信息
+                const message = line.replace(/^\[.*?\]\s*/, '');
+                safeSend('transfer-log', `[HRUFT] ${message}`);
+            } else if (line.includes('Progress') || line.includes('progress')) {
+                // 处理进度信息
+                safeSend('transfer-log', `[进度] ${line}`);
+            } else if (line.includes('Hash verification')) {
+                // 处理哈希校验信息
+                safeSend('transfer-log', `[校验] ${line}`);
+            } else if (line.trim().length > 0) {
+                // 其他输出
                 safeSend('transfer-log', `[HRUFT] ${line}`);
             }
-        } else {
-            // 普通文本输出
-            safeSend('transfer-log', `[HRUFT] ${line}`);
+        } catch (e) {
+            // 不是 JSON，作为普通文本处理
+            if (line.trim().length > 0) {
+                safeSend('transfer-log', `[HRUFT] ${line}`);
+            }
         }
     },
-
     handleHruftJson: (json, context) => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
 
         const {mode} = context;
         const isSend = mode === 'send';
 
-        // 🔧 修复点 6: 适配新版 HRUFT 的 JSON 消息类型
-        switch (json.type) {
-            case 'status':
-                // 状态消息
-                safeSend('transfer-log', `📋 ${json.message || JSON.stringify(json)}`);
-                break;
+        // 🔧 适配新版 HRUFT 输出格式
+        if (json.type === 'progress' || json.hasOwnProperty('percent')) {
+            // 进度报告
+            const current = json.current || 0;
+            const total = json.total || 1;
+            const progress = json.percent !== undefined ? json.percent : ((current / total) * 100);
 
-            case 'progress':
-                // 进度报告
-                const current = json.current || 0;
-                const total = json.total || 1;
-                // 🔧 修复: 确保进度不超过 100%，并处理边界情况
-                let progress = json.percent !== undefined ? json.percent : ((current / total) * 100);
-                progress = Math.min(100, Math.max(0, progress)); // 限制在 0-100
+            const payload = {
+                sent: isSend ? current : 0,
+                received: !isSend ? current : 0,
+                total: total,
+                progress: Math.min(100, Math.max(0, progress)),
+                speed: (json.speed_mbps || json.average_speed_mbps || 0) / 8, // 转换为 MB/s
+                remainingBytes: json.remaining_bytes || (total - current),
+                elapsedSeconds: json.elapsed_seconds || 0
+            };
 
-                const payload = {
-                    sent: isSend ? current : 0,
-                    received: !isSend ? current : 0,
-                    total: total,
-                    progress: progress,
-                    speed: (json.speed_mbps || 0) / 8, // 转换为 MB/s
-                    remainingBytes: Math.max(0, json.remaining_bytes || (total - current)),
-                    elapsedSeconds: json.elapsed_seconds || 0
-                };
+            safeSend(isSend ? 'file-send-progress' : 'file-transfer-progress', payload);
 
-                safeSend(isSend ? 'file-send-progress' : 'file-transfer-progress', payload);
-                break;
+        } else if (json.meta) {
+            // 最终统计报告 (新版 HRUFT 格式)
+            const meta = json.meta;
+            const completeData = {
+                fileName: meta.filename || context.fileName,
+                fileSize: meta.filesize || 0,
+                sourceMD5: meta.remote_hash || 'N/A',
+                receivedMD5: meta.local_hash || 'N/A',
+                match: meta.hash_match !== undefined ? meta.hash_match : true,
+                duration: meta.duration_sec || 0,
+                protocol: 'HRUFT',
+                stats: json,
+                averageSpeed: meta.avg_speed_mbps || 0,
+                maxSpeed: json.max_speed_mbps || 0,
+                networkQuality: json.network_health || 'unknown'
+            };
 
-            case 'verify':
-            case 'final_verify':
-                // MD5 校验结果
-                const verifyData = {
-                    success: json.success || false,
-                    expected: json.expected || '',
-                    actual: json.actual || '',
-                    message: json.success ? '✅ MD5 校验通过' : '❌ MD5 校验失败'
-                };
-                safeSend('transfer-log', verifyData.message);
-                break;
+            safeSend(isSend ? 'file-send-complete' : 'file-transfer-complete', completeData);
 
-            case 'statistics':
-                // 🔧 修复点 7: 处理详细统计信息
-                const completeData = {
-                    fileName: context.fileName,
-                    fileSize: json.total_bytes || 0,
-                    sourceMD5: json.source_md5 || 'N/A',
-                    receivedMD5: json.received_md5 || 'N/A',
-                    match: json.md5_match !== undefined ? json.md5_match : true,
-                    duration: json.total_time_seconds || 0,
-                    protocol: 'HRUFT',
-                    stats: json,
-                    // 新增字段
-                    averageSpeed: json.average_speed_mbps || 0,
-                    maxSpeed: json.max_speed_mbps || 0,
-                    networkQuality: json.network_quality_assessment?.quality_level || 'unknown'
-                };
+            // 输出详细统计
+            safeSend('transfer-log', `✅ 传输完成: ${meta.filename || '未知文件'}`);
+            safeSend('transfer-log', `📊 文件大小: ${meta.filesize_human || 'N/A'}`);
+            safeSend('transfer-log', `⏱️ 传输时间: ${meta.duration_sec || 0} 秒`);
+            safeSend('transfer-log', `📈 平均速度: ${meta.avg_speed_mbps || 0} Mbps`);
 
-                safeSend(isSend ? 'file-send-complete' : 'file-transfer-complete', completeData);
+            if (meta.hash_match !== undefined) {
+                const matchText = meta.hash_match ? '✅ 哈希校验通过' : '❌ 哈希校验失败';
+                safeSend('transfer-log', matchText);
+            }
 
-                // 输出网络质量评估
-                if (json.network_quality_assessment) {
-                    const qa = json.network_quality_assessment;
-                    safeSend('transfer-log', `📊 网络质量: ${qa.quality_level}`);
-                    if (qa.recommendations) {
-                        safeSend('transfer-log', `💡 建议: ${qa.recommendations}`);
-                    }
+            // 网络分析信息
+            if (json.analysis) {
+                const analysis = json.analysis;
+                safeSend('transfer-log', `🌐 网络健康度: ${analysis.network_health || 'unknown'}`);
+                if (analysis.advice && analysis.advice.length > 0) {
+                    analysis.advice.forEach(advice => {
+                        safeSend('transfer-log', `💡 建议: ${advice}`);
+                    });
                 }
-                break;
+            }
 
-            case 'error':
-                // 错误消息
-                safeSend(isSend ? 'file-send-error' : 'file-transfer-error', {
-                    error: json.message || '未知错误'
-                });
-                safeSend('transfer-log', `❌ 错误: ${json.message || '未知错误'}`);
-                break;
+        } else if (json.throughput || json.latency) {
+            // 网络性能数据
+            safeSend('transfer-log', `📊 性能数据: ${JSON.stringify(json)}`);
 
-            case 'success':
-                // 成功消息
-                safeSend('transfer-log', `✅ ${json.message || '操作成功'}`);
-                break;
+        } else if (json.error || json.message) {
+            // 错误消息
+            const errorMsg = json.error || json.message;
+            safeSend('transfer-log', `❌ 错误: ${errorMsg}`);
+            safeSend(isSend ? 'file-send-error' : 'file-transfer-error', {error: errorMsg});
 
-            case 'warning':
-                // 警告消息
-                safeSend('transfer-log', `⚠️ ${json.message || '警告'}`);
-                break;
-
-            default:
-                // 未知类型,输出原始 JSON
-                safeSend('transfer-log', `[JSON] ${JSON.stringify(json)}`);
-                break;
+        } else {
+            // 其他 JSON 消息
+            safeSend('transfer-log', `[JSON] ${JSON.stringify(json)}`);
         }
     },
 
