@@ -1549,39 +1549,51 @@ const FileTransferModule = {
             }
         }
     },
+
     handleHruftJson: (json, context) => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
 
-        const {mode} = context;
+        const {mode, fileName} = context;
         const isSend = mode === 'send';
 
         // 🔧 适配新版 HRUFT 输出格式
-        if (json.type === 'progress' || json.hasOwnProperty('percent')) {
-            // 进度报告
+        if (json.type === 'progress' || json.hasOwnProperty('percent') || json.hasOwnProperty('current')) {
+            // 进度报告 - 修复：确保必填字段存在
             const current = json.current || 0;
             const total = json.total || 1;
-            const progress = json.percent !== undefined ? json.percent : ((current / total) * 100);
+            let progress = 0;
+
+            if (json.percent !== undefined) {
+                progress = json.percent;
+            } else if (current > 0 && total > 0) {
+                progress = (current / total) * 100;
+            }
+
+            progress = Math.min(100, Math.max(0, progress)); // 确保在 0-100 范围内
 
             const payload = {
                 sent: isSend ? current : 0,
                 received: !isSend ? current : 0,
                 total: total,
-                progress: Math.min(100, Math.max(0, progress)),
+                progress: progress,
                 speed: (json.speed_mbps || json.average_speed_mbps || 0) / 8, // 转换为 MB/s
                 remainingBytes: json.remaining_bytes || (total - current),
                 elapsedSeconds: json.elapsed_seconds || 0
             };
 
-            safeSend(isSend ? 'file-send-progress' : 'file-transfer-progress', payload);
+            // 🔧 修复点：确保发送正确的事件名称
+            const eventName = isSend ? 'file-send-progress' : 'file-transfer-progress';
+            console.log(`[HRUFT] 发送进度事件: ${eventName}, 进度: ${progress}%`);
+            safeSend(eventName, payload);
 
         } else if (json.meta) {
             // 最终统计报告 (新版 HRUFT 格式)
             const meta = json.meta;
             const completeData = {
-                fileName: meta.filename || context.fileName,
+                fileName: meta.filename || fileName || '未知文件',
                 fileSize: meta.filesize || 0,
-                sourceMD5: meta.remote_hash || 'N/A',
-                receivedMD5: meta.local_hash || 'N/A',
+                sourceMD5: meta.remote_hash || meta.source_md5 || 'N/A',
+                receivedMD5: meta.local_hash || meta.received_md5 || 'N/A',
                 match: meta.hash_match !== undefined ? meta.hash_match : true,
                 duration: meta.duration_sec || 0,
                 protocol: 'HRUFT',
@@ -1591,43 +1603,16 @@ const FileTransferModule = {
                 networkQuality: json.network_health || 'unknown'
             };
 
-            safeSend(isSend ? 'file-send-complete' : 'file-transfer-complete', completeData);
+            const completeEventName = isSend ? 'file-send-complete' : 'file-transfer-complete';
+            console.log(`[HRUFT] 发送完成事件: ${completeEventName}`);
+            safeSend(completeEventName, completeData);
 
             // 输出详细统计
-            safeSend('transfer-log', `✅ 传输完成: ${meta.filename || '未知文件'}`);
-            safeSend('transfer-log', `📊 文件大小: ${meta.filesize_human || 'N/A'}`);
-            safeSend('transfer-log', `⏱️ 传输时间: ${meta.duration_sec || 0} 秒`);
-            safeSend('transfer-log', `📈 平均速度: ${meta.avg_speed_mbps || 0} Mbps`);
-
-            if (meta.hash_match !== undefined) {
-                const matchText = meta.hash_match ? '✅ 哈希校验通过' : '❌ 哈希校验失败';
-                safeSend('transfer-log', matchText);
-            }
-
-            // 网络分析信息
-            if (json.analysis) {
-                const analysis = json.analysis;
-                safeSend('transfer-log', `🌐 网络健康度: ${analysis.network_health || 'unknown'}`);
-                if (analysis.advice && analysis.advice.length > 0) {
-                    analysis.advice.forEach(advice => {
-                        safeSend('transfer-log', `💡 建议: ${advice}`);
-                    });
-                }
-            }
-
-        } else if (json.throughput || json.latency) {
-            // 网络性能数据
-            safeSend('transfer-log', `📊 性能数据: ${JSON.stringify(json)}`);
-
-        } else if (json.error || json.message) {
-            // 错误消息
-            const errorMsg = json.error || json.message;
-            safeSend('transfer-log', `❌ 错误: ${errorMsg}`);
-            safeSend(isSend ? 'file-send-error' : 'file-transfer-error', {error: errorMsg});
+            safeSend('transfer-log', `✅ 传输完成: ${meta.filename || fileName || '未知文件'}`);
 
         } else {
-            // 其他 JSON 消息
-            safeSend('transfer-log', `[JSON] ${JSON.stringify(json)}`);
+            // 其他消息作为日志输出
+            safeSend('transfer-log', `[HRUFT JSON] ${JSON.stringify(json)}`);
         }
     },
 

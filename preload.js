@@ -185,18 +185,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.removeAllListeners('file-send-start');
     ipcRenderer.on('file-send-start', (_, data) => callback(data));
   },
-  onFileSendProgress: (callback) => {
-    ipcRenderer.removeAllListeners('file-send-progress');
-    ipcRenderer.on('file-send-progress', (_, data) => callback(data));
-  },
-  onFileSendComplete: (callback) => {
-    ipcRenderer.removeAllListeners('file-send-complete');
-    ipcRenderer.on('file-send-complete', (_, data) => callback(data));
-  },
-  onFileSendError: (callback) => {
-    ipcRenderer.removeAllListeners('file-send-error');
-    ipcRenderer.on('file-send-error', (_, data) => callback(data));
-  },
 
   // --- 接收端事件 (Server) ---
 
@@ -204,17 +192,59 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.removeAllListeners('file-transfer-start');
     ipcRenderer.on('file-transfer-start', (_, data) => callback(data));
   },
+
+  // 在 preload.js 中，确保进度事件监听器正确设置：
+
+// --- 发送端事件 (Client) ---
+  onFileSendProgress: (callback) => {
+    console.log('[Preload] 注册 file-send-progress 监听器');
+    ipcRenderer.removeAllListeners('file-send-progress');
+    ipcRenderer.on('file-send-progress', (_, data) => {
+      console.log('[Preload] 收到 file-send-progress 事件:', data);
+      callback(data);
+    });
+  },
+  onFileSendComplete: (callback) => {
+    console.log('[Preload] 注册 file-send-complete 监听器');
+    ipcRenderer.removeAllListeners('file-send-complete');
+    ipcRenderer.on('file-send-complete', (_, data) => {
+      console.log('[Preload] 收到 file-send-complete 事件:', data);
+      callback(data);
+    });
+  },
+  onFileSendError: (callback) => {
+    console.log('[Preload] 注册 file-send-error 监听器');
+    ipcRenderer.removeAllListeners('file-send-error');
+    ipcRenderer.on('file-send-error', (_, data) => {
+      console.log('[Preload] 收到 file-send-error 事件:', data);
+      callback(data);
+    });
+  },
+
+// --- 接收端事件 (Server) ---
   onFileTransferProgress: (callback) => {
+    console.log('[Preload] 注册 file-transfer-progress 监听器');
     ipcRenderer.removeAllListeners('file-transfer-progress');
-    ipcRenderer.on('file-transfer-progress', (_, data) => callback(data));
+    ipcRenderer.on('file-transfer-progress', (_, data) => {
+      console.log('[Preload] 收到 file-transfer-progress 事件:', data);
+      callback(data);
+    });
   },
   onFileTransferComplete: (callback) => {
+    console.log('[Preload] 注册 file-transfer-complete 监听器');
     ipcRenderer.removeAllListeners('file-transfer-complete');
-    ipcRenderer.on('file-transfer-complete', (_, data) => callback(data));
+    ipcRenderer.on('file-transfer-complete', (_, data) => {
+      console.log('[Preload] 收到 file-transfer-complete 事件:', data);
+      callback(data);
+    });
   },
   onFileTransferError: (callback) => {
+    console.log('[Preload] 注册 file-transfer-error 监听器');
     ipcRenderer.removeAllListeners('file-transfer-error');
-    ipcRenderer.on('file-transfer-error', (_, data) => callback(data));
+    ipcRenderer.on('file-transfer-error', (_, data) => {
+      console.log('[Preload] 收到 file-transfer-error 事件:', data);
+      callback(data);
+    });
   },
 
 

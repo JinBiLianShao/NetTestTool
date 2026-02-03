@@ -1016,3 +1016,31 @@ input:disabled, select:disabled {
         color: #fff;
     }
 }
+
+
+#transfer-progress {
+    transition: all 0.3s ease;
+}
+
+#transfer-progress-bar {
+    transition: width 0.3s ease, background 0.3s ease;
+    height: 8px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #6c5ce7, #00d9a3);
+    box-shadow: 0 2px 8px rgba(108, 92, 231, 0.3);
+}
+
+.progress-info {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 12px;
+}
+
+.progress-info span {
+    color: #8b8d98;
+}
+
+.progress-info strong {
+    color: #e9ecef;
+}
