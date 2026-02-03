@@ -378,17 +378,15 @@
             </div>
 
             <!-- 传输进度显示 -->
-            <div id="transfer-progress" class="transfer-status-zone" style="display:none">
-                <div class="status-header">
-                    <span id="transfer-status-text" class="status-text">就绪</span>
-                    <span id="transfer-speed" class="speed-text">0 MB/s</span>
+            <div id="transfer-progress" style="display: none; margin-top: 20px;">
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="transfer-progress-bar"></div>
                 </div>
-                <div class="progress-bar-bg">
-                    <div id="transfer-progress-bar" class="progress-bar-fill accent"></div>
-                </div>
-                <div class="status-footer">
-                    <span id="transfer-bytes">0 / 0 MB</span>
-                    <span id="transfer-eta">剩余时间: --</span>
+                <div class="progress-info">
+                    <div id="transfer-status-text">等待传输...</div>
+                    <div id="transfer-speed">0.00 MB/s</div>
+                    <div id="transfer-bytes">0 / 0 MB</div>
+                    <div id="transfer-eta">剩余时间: --</div>
                 </div>
             </div>
 

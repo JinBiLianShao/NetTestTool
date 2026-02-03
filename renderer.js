@@ -587,26 +587,27 @@ const FileTransferModule = {
         };
     },
 
+
     handleProgress: (data) => {
         console.log('[Renderer] 收到进度数据:', data);
 
         // 确保数据有效
         if (!data || typeof data.progress !== 'number') {
-            console.error('[Renderer] 无效的进度数据:', data);
+            console.warn('[Renderer] 无效的进度数据:', data);
             return;
         }
 
         const now = Date.now();
-        if (now - this.lastProgressUpdate < this.progressUpdateInterval && data.progress < 99) {
-            console.log('[Renderer] 跳过频繁更新');
-            return; // 跳过中间更新
+
+        // 限制更新频率（最少100ms更新一次）
+        if (now - this.lastProgressUpdate < 100 && data.progress < 99) {
+            return;
         }
         this.lastProgressUpdate = now;
 
         const isSend = StateManager.transferMode === 'send';
-        console.log(`[Renderer] 模式: ${StateManager.transferMode}, 是发送模式: ${isSend}`);
 
-        // 🔧 修复点 1: 确保进度条容器显示
+        // 确保进度条容器可见
         const progressDiv = document.getElementById('transfer-progress');
         if (progressDiv && progressDiv.style.display === 'none') {
             console.log('[Renderer] 显示进度条容器');
@@ -614,20 +615,14 @@ const FileTransferModule = {
         }
 
         let progress = parseFloat(data.progress) || 0;
-        progress = Math.min(100, Math.max(0, progress)); // 限制在 0-100
-
-        const currentBytes = isSend ? data.sent : data.received || 0;
-        const totalBytes = data.total || 1;
-
-        // 🔧 修复点 2: 确保进度条平滑更新
-        console.log(`[Renderer] 更新进度: ${progress}%, 字节: ${currentBytes}/${totalBytes}`);
+        progress = Math.min(100, Math.max(0, progress));
 
         // 更新进度条
         const progressBar = document.getElementById('transfer-progress-bar');
         if (progressBar) {
             progressBar.style.width = `${progress}%`;
 
-            // 根据进度改变颜色
+            // 动态颜色
             if (progress < 30) {
                 progressBar.style.background = 'linear-gradient(90deg, #ff4757, #ff6b81)';
             } else if (progress < 70) {
@@ -635,13 +630,16 @@ const FileTransferModule = {
             } else {
                 progressBar.style.background = 'linear-gradient(90deg, #00d9a3, #2ecc71)';
             }
+
+            // 强制重绘
+            void progressBar.offsetWidth;
         }
 
-        // 🔧 修复点 3: 更新状态文本
+        // 更新状态文本
         const statusText = document.getElementById('transfer-status-text');
         if (statusText) {
-            if (progress >= 100) {
-                statusText.textContent = '✅ 传输完成';
+            if (progress >= 99.9) {
+                statusText.textContent = '✅ 即将完成';
                 statusText.style.color = '#00d9a3';
             } else if (progress > 0) {
                 statusText.textContent = isSend ? '🚀 正在发送...' : '📥 正在接收...';
@@ -652,70 +650,44 @@ const FileTransferModule = {
             }
         }
 
-        // 🔧 修复点 4: 更新速度显示
+        // 更新速度
         const speedText = document.getElementById('transfer-speed');
         if (speedText) {
             const speed = data.speed || 0;
             speedText.textContent = `${speed.toFixed(2)} MB/s`;
-
-            // 根据速度显示不同颜色
-            if (speed > 10) {
-                speedText.style.color = '#00d9a3'; // 绿色
-            } else if (speed > 1) {
-                speedText.style.color = '#ffa502'; // 橙色
-            } else {
-                speedText.style.color = '#ff4757'; // 红色
-            }
+            speedText.style.color = speed > 10 ? '#00d9a3' : '#ffa502';
         }
 
-        // 🔧 修复点 5: 更新字节显示
+        // 更新字节显示
         const bytesText = document.getElementById('transfer-bytes');
         if (bytesText) {
-            const currentMB = currentBytes / 1024 / 1024;
-            const totalMB = totalBytes / 1024 / 1024;
+            const current = data.sent || data.received || 0;
+            const total = data.total || 1;
 
-            if (totalMB > 0) {
-                bytesText.textContent = `${currentMB.toFixed(2)} / ${totalMB.toFixed(2)} MB`;
-            } else {
-                bytesText.textContent = `${currentMB.toFixed(2)} MB`;
+            if (total > 0) {
+                const currentMB = (current / 1024 / 1024).toFixed(2);
+                const totalMB = (total / 1024 / 1024).toFixed(2);
+                bytesText.textContent = `${currentMB} / ${totalMB} MB`;
             }
         }
 
-        // 🔧 修复点 6: 更新剩余时间
+        // 更新剩余时间
         const etaText = document.getElementById('transfer-eta');
         if (etaText && data.speed && data.speed > 0 && data.remainingBytes > 0) {
-            const remainingMB = data.remainingBytes / 1024 / 1024;
-            const etaSeconds = remainingMB / data.speed;
+            const remainingSeconds = (data.remainingBytes / 1024 / 1024) / data.speed;
 
-            if (etaSeconds < 60) {
-                etaText.textContent = `剩余: ${Math.ceil(etaSeconds)}秒`;
+            if (remainingSeconds < 60) {
+                etaText.textContent = `剩余: ${Math.ceil(remainingSeconds)}秒`;
+            } else if (remainingSeconds < 3600) {
+                const minutes = Math.floor(remainingSeconds / 60);
+                const seconds = Math.floor(remainingSeconds % 60);
+                etaText.textContent = `剩余: ${minutes}分${seconds}秒`;
             } else {
-                const minutes = Math.floor(etaSeconds / 60);
-                const seconds = Math.ceil(etaSeconds % 60);
-                etaText.textContent = `剩余: ${minutes}:${seconds.toString().padStart(2, '0')}`;
-            }
-            etaText.style.color = '#8b8d98';
-        } else if (etaText) {
-            etaText.textContent = progress >= 100 ? '已完成' : '计算中...';
-        }
-
-        // 🔧 修复点 7: 特殊处理接近完成的情况
-        if (progress > 95 && progress < 100) {
-            const statusText = document.getElementById('transfer-status-text');
-            if (statusText) {
-                statusText.textContent = '即将完成...';
-                statusText.style.color = '#ffa502';
+                const hours = Math.floor(remainingSeconds / 3600);
+                const minutes = Math.floor((remainingSeconds % 3600) / 60);
+                etaText.textContent = `剩余: ${hours}小时${minutes}分`;
             }
         }
-
-        // 🔧 修复点 8: 强制重绘进度条
-        if (progressBar) {
-            progressBar.style.display = 'none';
-            progressBar.offsetHeight; // 触发重排
-            progressBar.style.display = 'block';
-        }
-
-        console.log('[Renderer] 进度更新完成');
     },
 
     handleComplete(data) {

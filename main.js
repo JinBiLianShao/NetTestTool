@@ -1117,26 +1117,6 @@ const ThroughputModule = {
 // ============================================================================
 //                          模块 5: File Transfer (文件传输 & HRUFT)
 // ============================================================================
-/**
- * 确保路径在不同平台上的正确编码
- * @param {string} filePath - 原始文件路径
- * @returns {string} - 编码正确的路径
- */
-function ensureCorrectPathEncoding(filePath) {
-    if (isWin) {
-        // 在 Windows 上，确保使用正确的编码
-        try {
-            // 使用 Node.js 的 path 模块确保路径格式正确
-            return path.resolve(filePath);
-        } catch (e) {
-            console.warn('[Path Encoding] 路径处理错误:', e.message);
-            return filePath;
-        }
-    }
-    return filePath;
-}
-
-
 const FileTransferModule = {
     hruftProcesses: new Map(), // 存储运行中的 HRUFT 子进程
     tcpServer: null,
@@ -1176,7 +1156,6 @@ const FileTransferModule = {
             return;
         }
 
-        // 支持中文文件名 - 确保路径正确处理
         const fileName = path.basename(filePath);
         const transferId = `send-${Date.now()}`;
         const absoluteFilePath = path.resolve(filePath);
@@ -1190,7 +1169,6 @@ const FileTransferModule = {
                 args.push('--mss', udtConfig.packetSize.toString());
             }
             if (udtConfig.windowSize) {
-                // 新版 HRUFT 使用 --window 参数，单位为字节
                 args.push('--window', udtConfig.windowSize.toString());
             }
         }
@@ -1204,7 +1182,7 @@ const FileTransferModule = {
             mainWindow.webContents.send('file-send-start', {
                 fileName,
                 fileSize: fs.statSync(filePath).size,
-                hash: '计算中(BLAKE3)...' // 修改为哈希而不是 MD5
+                hash: '计算中(BLAKE3)...'
             });
         }
 
@@ -1226,12 +1204,21 @@ const FileTransferModule = {
         let stderrBuffer = '';
 
         child.stdout.on('data', (data) => {
-            stdoutBuffer += data.toString();
-            const lines = stdoutBuffer.split('\n');
-            stdoutBuffer = lines.pop() || '';
+            const rawOutput = data.toString();
+            console.log(`[HRUFT发送原始输出] ${rawOutput}`);
+
+            // 按行分割
+            const lines = rawOutput.split(/\r?\n/);
 
             lines.forEach(line => {
-                FileTransferModule.parseHruftOutput(line, {mode: 'send', fileName});
+                line = line.trim();
+                if (line) {
+                    FileTransferModule.parseHruftOutput(line, {
+                        mode: 'send',
+                        fileName,
+                        filePath: absoluteFilePath
+                    });
+                }
             });
         });
 
@@ -1293,19 +1280,41 @@ const FileTransferModule = {
                 const pid = `recv-${port}`;
                 FileTransferModule.hruftProcesses.set(pid, child);
 
+                // 接收上下文
+                const receiveContext = {
+                    mode: 'receive',
+                    fileName: '等待文件...',
+                    savePath: absoluteSavePath,
+                    startTime: Date.now(),
+                    lastProgressTime: Date.now(),
+                    lastBytes: 0
+                };
+
                 let stdoutBuffer = '';
                 let stderrBuffer = '';
 
                 child.stdout.on('data', data => {
-                    stdoutBuffer += data.toString();
-                    const lines = stdoutBuffer.split('\n');
-                    stdoutBuffer = lines.pop() || '';
+                    const rawOutput = data.toString();
+                    console.log(`[HRUFT接收原始输出]`, rawOutput); // 调试日志
 
-                    lines.forEach(line => {
-                        FileTransferModule.parseHruftOutput(line, {
-                            mode: 'receive',
-                            fileName: 'Incoming...'
-                        });
+                    // 关键修复：同时按回车符(\r)和换行符(\n)分割
+                    // HRUFT使用 \r 进行进度更新，但其他消息可能使用 \n
+                    const lines = rawOutput.split(/\r\n|\n|\r/);
+
+                    // 过滤空行
+                    const nonEmptyLines = lines.filter(line => line.trim().length > 0);
+
+                    nonEmptyLines.forEach(line => {
+                        const trimmedLine = line.trim();
+
+                        // 跳过进度行中的重复输出（由于回车符导致）
+                        if (trimmedLine.startsWith('[Progress]')) {
+                            // 直接处理进度行
+                            FileTransferModule.parseHruftOutput(trimmedLine, receiveContext);
+                        } else if (trimmedLine) {
+                            // 其他消息正常处理
+                            FileTransferModule.parseHruftOutput(trimmedLine, receiveContext);
+                        }
                     });
                 });
 
@@ -1371,7 +1380,270 @@ const FileTransferModule = {
         safeSend('transfer-log', '所有传输服务已停止');
     },
 
-// TCP 服务端实现 (修改版，支持中文路径)
+    // ---------------- 进度解析和事件发送 ----------------
+
+    parseHruftOutput: (line, context) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+
+        line = line.trim();
+        if (!line) return;
+
+        console.log(`[HRUFT解析] ${line}, 模式: ${context.mode}`);
+
+        // 1. 先尝试解析 JSON（处理最终的统计报告）
+        try {
+            if (line.startsWith('{') && line.endsWith('}')) {
+                const json = JSON.parse(line);
+                console.log('[HRUFT JSON]', json);
+                FileTransferModule.handleHruftJson(json, context);
+                return;
+            }
+        } catch (e) {
+            // 不是 JSON，继续处理
+        }
+
+        // 2. 解析文件开始信息
+        if (line.includes('Receiving file:') || line.includes('Sending file:')) {
+            const fileMatch = line.match(/(?:Receiving|Sending) file:\s*(.+?)\s*\(([\d\.]+)\s*([KMG]?B)\)/i);
+            if (fileMatch) {
+                const fileName = fileMatch[1].trim();
+                const fileSize = parseFloat(fileMatch[2]);
+                const fileUnit = fileMatch[3].toUpperCase();
+
+                // 转换为字节
+                const sizeInBytes = FileTransferModule.convertToBytes(fileSize, fileUnit);
+
+                context.fileName = fileName;
+                context.totalBytes = sizeInBytes;
+
+                console.log(`[HRUFT] 文件信息: ${fileName}, 大小: ${sizeInBytes} bytes`);
+
+                if (context.mode === 'receive') {
+                    // 发送接收开始事件
+                    safeSend('file-transfer-start', {
+                        fileName: fileName,
+                        fileSize: sizeInBytes
+                    });
+                }
+
+                safeSend('transfer-log', `📁 ${context.mode === 'send' ? '发送' : '接收'}文件: ${fileName} (${fileSize} ${fileUnit})`);
+                return;
+            }
+        }
+
+        // 3. 解析进度信息 - 关键修复：支持回车符进度行
+        if (line.startsWith('[Progress]') || line.startsWith('Progress')) {
+            // 增强的进度解析，支持带和不带回车符
+            const progressData = FileTransferModule.parseProgressLineEnhanced(line);
+            if (progressData) {
+                const { percent, currentBytes, totalBytes, speedMbps } = progressData;
+
+                // 更新上下文中的总大小
+                if (totalBytes > 0) {
+                    context.totalBytes = totalBytes;
+                }
+
+                // 如果还没有总大小，跳过进度更新
+                if (!context.totalBytes || context.totalBytes <= 0) {
+                    console.log('[HRUFT] 等待文件大小信息...');
+                    return;
+                }
+
+                // 计算速度
+                let speedMBps = speedMbps > 0 ? speedMbps / 8 : 0;
+
+                // 准备进度数据
+                const progressPayload = {
+                    progress: percent,
+                    received: context.mode === 'receive' ? currentBytes : 0,
+                    sent: context.mode === 'send' ? currentBytes : 0,
+                    total: context.totalBytes,
+                    speed: speedMBps,
+                    remainingBytes: Math.max(0, context.totalBytes - currentBytes),
+                    elapsedSeconds: (Date.now() - (context.startTime || Date.now())) / 1000
+                };
+
+                console.log(`[HRUFT进度] 模式: ${context.mode}, 进度: ${percent}%, 当前: ${currentBytes}, 总计: ${context.totalBytes}`);
+
+                // 发送正确的进度事件
+                if (context.mode === 'receive') {
+                    safeSend('file-transfer-progress', progressPayload);
+                } else if (context.mode === 'send') {
+                    safeSend('file-send-progress', progressPayload);
+                }
+
+                return;
+            }
+        }
+
+        // 4. 解析连接信息
+        if (line.includes('Connecting to') || line.includes('Listening on')) {
+            safeSend('transfer-log', `🔗 ${line}`);
+            return;
+        }
+
+        // 5. 解析其他日志信息
+        if (line.includes('[INFO]')) {
+            const info = line.replace(/\[INFO\]\s*/, '').trim();
+            safeSend('transfer-log', `ℹ️ ${info}`);
+            return;
+        }
+
+        if (line.includes('[ERROR]')) {
+            const error = line.replace(/\[ERROR\]\s*/, '').trim();
+            safeSend('transfer-log', `❌ ${error}`);
+            return;
+        }
+
+        if (line.includes('[WARNING]')) {
+            const warning = line.replace(/\[WARNING\]\s*/, '').trim();
+            safeSend('transfer-log', `⚠️ ${warning}`);
+            return;
+        }
+
+        // 6. 其他信息
+        safeSend('transfer-log', `📝 ${line}`);
+    },
+
+    // 增强的进度行解析函数
+    parseProgressLineEnhanced: (line) => {
+        // 移除可能的回车符和换行符
+        line = line.replace(/\r/g, '').replace(/\n/g, '').trim();
+
+        // 匹配 HRUFT 的进度格式：
+        // [Progress] 0.3% | 4.00 MB / 1.28 GB | Rate: 101.5 Mbps
+        // 或者不带速率： [Progress] 0.3% | 4.00 MB / 1.28 GB
+
+        // 首先尝试完整匹配（带速率）
+        const fullPattern = /\[Progress\]\s*([\d\.]+)%\s*\|\s*([\d\.]+)\s*([KMG]?B)\s*\/\s*([\d\.]+)\s*([KMG]?B)(?:\s*\|\s*Rate:\s*([\d\.]+)\s*Mbps)?/i;
+
+        const match = line.match(fullPattern);
+        if (match) {
+            const percent = parseFloat(match[1]) || 0;
+            const currentValue = parseFloat(match[2]) || 0;
+            const currentUnit = (match[3] || 'B').toUpperCase();
+            const totalValue = parseFloat(match[4]) || 0;
+            const totalUnit = (match[5] || 'B').toUpperCase();
+            const speedMbps = match[6] ? parseFloat(match[6]) : 0;
+
+            // 单位转换
+            const unitMap = {
+                'B': 1,
+                'KB': 1024,
+                'MB': 1024 * 1024,
+                'GB': 1024 * 1024 * 1024
+            };
+
+            const currentBytes = currentValue * (unitMap[currentUnit] || 1);
+            const totalBytes = totalValue * (unitMap[totalUnit] || 1);
+
+            return {
+                percent,
+                currentBytes,
+                totalBytes,
+                speedMbps
+            };
+        }
+
+        // 如果完整匹配失败，尝试只匹配百分比
+        const simplePattern = /\[Progress\]\s*([\d\.]+)%/;
+        const simpleMatch = line.match(simplePattern);
+        if (simpleMatch) {
+            return {
+                percent: parseFloat(simpleMatch[1]) || 0,
+                currentBytes: 0,
+                totalBytes: 0,
+                speedMbps: 0
+            };
+        }
+
+        return null;
+    },
+
+    // 单位转换函数
+    convertToBytes: (value, unit) => {
+        unit = unit.toUpperCase();
+        const multipliers = {
+            'B': 1,
+            'KB': 1024,
+            'MB': 1024 * 1024,
+            'GB': 1024 * 1024 * 1024,
+            'TB': 1024 * 1024 * 1024 * 1024
+        };
+
+        return value * (multipliers[unit] || 1);
+    },
+
+    // 处理 JSON 数据
+    handleHruftJson: (json, context) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+
+        const { mode, fileName } = context;
+        const isSend = mode === 'send';
+
+        // 处理 meta 部分（最终的统计报告）
+        if (json.meta) {
+            const meta = json.meta;
+            const completeData = {
+                fileName: meta.filename || fileName || '未知文件',
+                fileSize: meta.filesize || 0,
+                sourceMD5: meta.remote_hash || 'N/A',
+                receivedMD5: meta.local_hash || 'N/A',
+                match: meta.hash_match !== undefined ? meta.hash_match : true,
+                duration: meta.duration_sec || 0,
+                protocol: 'HRUFT',
+                stats: json,
+                averageSpeed: meta.avg_speed_mbps || 0,
+                maxSpeed: json.max_speed_mbps || 0,
+                networkQuality: json.network_health || 'unknown'
+            };
+
+            const completeEventName = isSend ? 'file-send-complete' : 'file-transfer-complete';
+            console.log(`[HRUFT完成] 发送事件: ${completeEventName}`);
+            safeSend(completeEventName, completeData);
+
+            // 输出详细统计
+            safeSend('transfer-log', `✅ 传输完成: ${meta.filename || fileName || '未知文件'}`);
+            safeSend('transfer-log', `📊 文件大小: ${meta.filesize_human || 'N/A'}`);
+            safeSend('transfer-log', `⏱️ 传输时间: ${meta.duration_sec || 0} 秒`);
+            safeSend('transfer-log', `📈 平均速度: ${meta.avg_speed_mbps || 0} Mbps`);
+
+            if (meta.hash_match !== undefined) {
+                const matchText = meta.hash_match ? '✅ 哈希校验通过' : '❌ 哈希校验失败';
+                safeSend('transfer-log', matchText);
+            }
+
+            // 网络分析信息
+            if (json.analysis) {
+                const analysis = json.analysis;
+                safeSend('transfer-log', `🌐 网络健康度: ${analysis.network_health || 'unknown'}`);
+                if (analysis.advice && analysis.advice.length > 0) {
+                    analysis.advice.forEach(advice => {
+                        safeSend('transfer-log', `💡 建议: ${advice}`);
+                    });
+                }
+            }
+        } else if (json.type === 'progress') {
+            // 处理 JSON 格式的进度信息
+            const payload = {
+                progress: json.percent || 0,
+                sent: isSend ? (json.current || 0) : 0,
+                received: !isSend ? (json.current || 0) : 0,
+                total: json.total || 1,
+                speed: (json.speed_mbps || 0) / 8,
+                remainingBytes: json.remaining_bytes || 0,
+                elapsedSeconds: json.elapsed_seconds || 0
+            };
+
+            const eventName = isSend ? 'file-send-progress' : 'file-transfer-progress';
+            safeSend(eventName, payload);
+        } else {
+            // 其他 JSON 消息
+            safeSend('transfer-log', `[JSON] ${JSON.stringify(json)}`);
+        }
+    },
+
+    // ---------------- TCP 服务器 ----------------
     startTcpServer: (port, savePath) => {
         const server = net.createServer(socket => {
             let fileName = `recv_${Date.now()}.bin`;
@@ -1379,6 +1651,9 @@ const FileTransferModule = {
             let received = 0;
             let metaReceived = false;
             let writeStream = null;
+            let startTime = Date.now();
+            let lastProgressTime = startTime;
+            let lastBytes = 0;
 
             socket.on('data', chunk => {
                 if (!metaReceived) {
@@ -1387,66 +1662,129 @@ const FileTransferModule = {
                         const parts = str.split('###END_METADATA###');
                         try {
                             const meta = JSON.parse(parts[0]);
-
-                            // 🔧 修复点 1: 确保中文文件名正确处理
                             fileName = meta.fileName || fileName;
                             fileSize = meta.fileSize || 0;
                             metaReceived = true;
 
-                            // 🔧 修复点 2: 确保中文保存路径正确处理
                             const fullSavePath = path.join(savePath, fileName);
-
                             writeStream = fs.createWriteStream(fullSavePath);
 
-                            if (mainWindow) {
-                                mainWindow.webContents.send('file-transfer-start', {fileName, fileSize});
-                            }
+                            // 🔧 修复点1: 发送接收开始事件（与HRUFT一致）
+                            safeSend('file-transfer-start', {
+                                fileName,
+                                fileSize
+                            });
 
-                            if (parts[1]) {
+                            // 发送初始日志
+                            safeSend('transfer-log', `📁 开始接收文件: ${fileName} (${FileTransferModule.formatFileSize(fileSize)})`);
+
+                            if (parts[1] && parts[1].length > 0) {
                                 writeStream.write(parts[1]);
                                 received += Buffer.byteLength(parts[1]);
+
+                                // 🔧 修复点2: 立即发送初始进度
+                                if (fileSize > 0) {
+                                    const now = Date.now();
+                                    const elapsedSeconds = (now - startTime) / 1000;
+                                    const speed = elapsedSeconds > 0 ? (received / elapsedSeconds) / (1024 * 1024) : 0;
+
+                                    safeSend('file-transfer-progress', {
+                                        progress: (received / fileSize * 100).toFixed(1),
+                                        received,
+                                        total: fileSize,
+                                        speed,
+                                        remainingBytes: fileSize - received,
+                                        elapsedSeconds
+                                    });
+
+                                    lastProgressTime = now;
+                                    lastBytes = received;
+                                }
                             }
                         } catch (e) {
                             console.error('[TCP] 元数据解析失败:', e);
+                            safeSend('transfer-log', `❌ TCP 元数据解析失败: ${e.message}`);
                         }
                     }
                 } else {
-                    writeStream.write(chunk);
+                    if (writeStream) {
+                        writeStream.write(chunk);
+                    }
                     received += chunk.length;
 
-                    if (mainWindow) {
-                        mainWindow.webContents.send('file-transfer-progress', {
+                    // 🔧 修复点3: 优化进度更新频率和逻辑
+                    const now = Date.now();
+                    const timeDiff = now - lastProgressTime;
+
+                    // 每200ms更新一次，或当进度有明显变化时（1%以上）
+                    if (fileSize > 0 && (timeDiff > 200 || (received - lastBytes) / fileSize > 0.01)) {
+                        const elapsedSeconds = (now - startTime) / 1000;
+                        const speed = elapsedSeconds > 0 ? ((received - lastBytes) / (timeDiff / 1000)) / (1024 * 1024) : 0;
+
+                        const progressPayload = {
+                            progress: Math.min(100, (received / fileSize * 100).toFixed(1)),
                             received,
                             total: fileSize,
-                            progress: (received / fileSize * 100).toFixed(1),
-                            speed: 0
-                        });
+                            speed: Math.max(0, speed), // 确保非负
+                            remainingBytes: Math.max(0, fileSize - received),
+                            elapsedSeconds: elapsedSeconds.toFixed(1)
+                        };
+
+                        console.log(`[TCP接收进度] ${progressPayload.progress}%, 速度: ${progressPayload.speed.toFixed(2)} MB/s`);
+                        safeSend('file-transfer-progress', progressPayload);
+
+                        lastProgressTime = now;
+                        lastBytes = received;
                     }
                 }
             });
 
             socket.on('end', () => {
-                if (writeStream) writeStream.end();
-                if (mainWindow) {
-                    mainWindow.webContents.send('file-transfer-complete', {
-                        fileName,
-                        fileSize: received,
-                        protocol: 'TCP'
-                    });
+                if (writeStream) {
+                    writeStream.end();
                 }
+
+                const elapsedSeconds = (Date.now() - startTime) / 1000;
+                const avgSpeed = elapsedSeconds > 0 ? (received / elapsedSeconds) / (1024 * 1024) : 0;
+
+                // 🔧 修复点4: 发送完成事件（与HRUFT结构一致）
+                const completeData = {
+                    fileName,
+                    fileSize: received,
+                    sourceMD5: 'N/A',  // TCP模式没有哈希校验
+                    receivedMD5: 'N/A',
+                    match: true,
+                    duration: elapsedSeconds,
+                    protocol: 'TCP',
+                    stats: {
+                        transfer: {
+                            bytes: received,
+                            time: elapsedSeconds
+                        }
+                    },
+                    averageSpeed: avgSpeed * 8, // MB/s to Mbps
+                    maxSpeed: avgSpeed * 8,
+                    networkQuality: 'unknown'
+                };
+
+                safeSend('file-transfer-complete', completeData);
+                safeSend('transfer-log', `✅ TCP 接收完成: ${fileName} (${FileTransferModule.formatFileSize(received)})`);
+                safeSend('transfer-log', `⏱️ 传输时间: ${elapsedSeconds.toFixed(2)} 秒`);
+                safeSend('transfer-log', `📈 平均速度: ${(avgSpeed * 8).toFixed(2)} Mbps`);
             });
 
             socket.on('error', (err) => {
                 console.error('[TCP] Socket 错误:', err);
-                if (writeStream) writeStream.end();
+                if (writeStream) {
+                    writeStream.end();
+                }
+                safeSend('transfer-log', `❌ TCP 接收错误: ${err.message}`);
             });
         });
 
         server.listen(port, () => {
             FileTransferModule.tcpServer = server;
-            if (mainWindow) {
-                mainWindow.webContents.send('transfer-log', `TCP 服务端监听端口: ${port}`);
-            }
+            safeSend('transfer-log', `✅ TCP 服务端监听端口: ${port}`);
         });
 
         server.on('error', (err) => {
@@ -1455,49 +1793,152 @@ const FileTransferModule = {
         });
     },
 
-// TCP 发送端修改
+    // ---------------- TCP 发送端 ----------------
     sendTcp: (ip, port, filePath) => {
         const socket = new net.Socket();
-
-        // 🔧 修复点 1: 确保中文文件名和路径正确处理
         const fileName = path.basename(filePath);
-        const fileSize = fs.statSync(filePath).size;
+
+        // 获取文件信息
+        let fileSize = 0;
+        try {
+            const stats = fs.statSync(filePath);
+            fileSize = stats.size;
+        } catch (err) {
+            safeSend('file-send-error', {error: `无法读取文件: ${err.message}`});
+            return;
+        }
+
         let sent = 0;
+        let startTime = Date.now();
+        let lastProgressTime = startTime;
+        let lastBytes = 0;
+
+        // 🔧 修复点5: 确保文件名正确编码
+        const encodedFileName = fileName;
 
         socket.connect(port, ip, () => {
-            mainWindow.webContents.send('file-send-start', {fileName, fileSize, md5: 'N/A'});
+            console.log(`[TCP] 连接到 ${ip}:${port}`);
 
-            // 🔧 修复点 2: 确保中文文件名在 JSON 元数据中正确传输
-            const meta = JSON.stringify({fileName, fileSize});
-            socket.write(meta + '\n###END_METADATA###\n');
+            // 发送开始事件
+            safeSend('file-send-start', {
+                fileName,
+                fileSize,
+                hash: 'N/A (TCP模式)'
+            });
 
+            safeSend('transfer-log', `📤 开始发送文件: ${fileName} (${FileTransferModule.formatFileSize(fileSize)})`);
+
+            // 发送元数据头
+            const meta = JSON.stringify({
+                fileName: encodedFileName,
+                fileSize: fileSize
+            });
+
+            // 发送元数据
+            const metaBuffer = Buffer.from(meta + '\n###END_METADATA###\n');
+            const canWrite = socket.write(metaBuffer);
+            sent += metaBuffer.length;
+
+            if (!canWrite) {
+                // 如果缓冲区已满，暂停读取
+                socket.pause();
+            }
+
+            // 创建读取流
             const stream = fs.createReadStream(filePath);
-            stream.on('data', chunk => {
-                const ok = socket.write(chunk);
-                sent += chunk.length;
-                if (!ok) stream.pause();
 
-                // 进度通知
-                if (mainWindow) {
-                    mainWindow.webContents.send('file-send-progress', {
-                        sent, total: fileSize, progress: (sent / fileSize * 100).toFixed(1), speed: 0
-                    });
+            stream.on('data', chunk => {
+                const canWrite = socket.write(chunk);
+                sent += chunk.length;
+
+                // 🔧 修复点6: 改进进度更新逻辑
+                const now = Date.now();
+                const timeDiff = now - lastProgressTime;
+
+                // 每200ms更新一次，或当进度有明显变化时（1%以上）
+                if (fileSize > 0 && (timeDiff > 200 || (sent - lastBytes) / fileSize > 0.01)) {
+                    const elapsedSeconds = (now - startTime) / 1000;
+                    const speed = elapsedSeconds > 0 ? ((sent - lastBytes) / (timeDiff / 1000)) / (1024 * 1024) : 0;
+
+                    const progressPayload = {
+                        sent,
+                        total: fileSize,
+                        progress: Math.min(100, (sent / fileSize * 100).toFixed(1)),
+                        speed: Math.max(0, speed),
+                        remainingBytes: Math.max(0, fileSize - sent),
+                        elapsedSeconds: elapsedSeconds.toFixed(1)
+                    };
+
+                    console.log(`[TCP发送进度] ${progressPayload.progress}%, 速度: ${progressPayload.speed.toFixed(2)} MB/s`);
+                    safeSend('file-send-progress', progressPayload);
+
+                    lastProgressTime = now;
+                    lastBytes = sent;
+                }
+
+                if (!canWrite) {
+                    // 如果缓冲区已满，暂停读取
+                    stream.pause();
                 }
             });
-            socket.on('drain', () => stream.resume());
-            stream.on('end', () => {
-                socket.end();
-                if (mainWindow) mainWindow.webContents.send('file-send-complete', {
-                    fileName,
-                    fileSize,
-                    protocol: 'TCP'
-                });
+
+            socket.on('drain', () => {
+                // 缓冲区有空间时恢复读取
+                stream.resume();
             });
+
+            stream.on('end', () => {
+                console.log(`[TCP] 文件读取完成，总大小: ${sent} bytes`);
+                socket.end();
+            });
+
+            stream.on('error', (err) => {
+                console.error('[TCP] 文件读取错误:', err);
+                socket.destroy();
+                safeSend('file-send-error', {error: `文件读取错误: ${err.message}`});
+            });
+        });
+
+        socket.on('end', () => {
+            const elapsedSeconds = (Date.now() - startTime) / 1000;
+            const avgSpeed = elapsedSeconds > 0 ? (sent / elapsedSeconds) / (1024 * 1024) : 0;
+
+            // 🔧 修复点7: 发送完成事件
+            const completeData = {
+                fileName,
+                fileSize,
+                sourceMD5: 'N/A',
+                receivedMD5: 'N/A',
+                match: true,
+                duration: elapsedSeconds,
+                protocol: 'TCP',
+                stats: {
+                    transfer: {
+                        bytes: sent,
+                        time: elapsedSeconds
+                    }
+                },
+                averageSpeed: avgSpeed * 8,
+                maxSpeed: avgSpeed * 8,
+                networkQuality: 'unknown'
+            };
+
+            safeSend('file-send-complete', completeData);
+            safeSend('transfer-log', `✅ TCP 发送完成: ${fileName}`);
+            safeSend('transfer-log', `⏱️ 传输时间: ${elapsedSeconds.toFixed(2)} 秒`);
+            safeSend('transfer-log', `📈 平均速度: ${(avgSpeed * 8).toFixed(2)} Mbps`);
         });
 
         socket.on('error', (err) => {
             console.error('[TCP] 发送错误:', err);
-            safeSend('file-send-error', {error: err.message});
+            safeSend('file-send-error', {error: `TCP连接错误: ${err.message}`});
+            safeSend('transfer-log', `❌ TCP 发送错误: ${err.message}`);
+        });
+
+        // 设置超时
+        socket.setTimeout(30000, () => {
+            socket.destroy();
+            safeSend('file-send-error', {error: '连接超时'});
         });
     },
 
@@ -1510,156 +1951,16 @@ const FileTransferModule = {
         }
     },
 
-    // ---------------- 辅助函数 ----------------
-
-    parseHruftOutput: (line, context) => {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-
-        line = line.trim();
-        if (!line) return;
-
-        // 🔧 处理新版 HRUFT 输出格式
-        try {
-            // 尝试解析 JSON (新版 HRUFT 输出 JSON 格式)
-            if (line.startsWith('{') || line.startsWith('[')) {
-                const json = JSON.parse(line);
-                FileTransferModule.handleHruftJson(json, context);
-                return;
-            }
-
-            // 处理普通文本输出
-            if (line.includes('[INFO]') || line.includes('[ERROR]') || line.includes('[WARNING]')) {
-                // 提取有意义的信息
-                const message = line.replace(/^\[.*?\]\s*/, '');
-                safeSend('transfer-log', `[HRUFT] ${message}`);
-            } else if (line.includes('Progress') || line.includes('progress')) {
-                // 处理进度信息
-                safeSend('transfer-log', `[进度] ${line}`);
-            } else if (line.includes('Hash verification')) {
-                // 处理哈希校验信息
-                safeSend('transfer-log', `[校验] ${line}`);
-            } else if (line.trim().length > 0) {
-                // 其他输出
-                safeSend('transfer-log', `[HRUFT] ${line}`);
-            }
-        } catch (e) {
-            // 不是 JSON，作为普通文本处理
-            if (line.trim().length > 0) {
-                safeSend('transfer-log', `[HRUFT] ${line}`);
-            }
-        }
-    },
-
-    handleHruftJson: (json, context) => {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-
-        const {mode, fileName} = context;
-        const isSend = mode === 'send';
-
-        // 🔧 适配新版 HRUFT 输出格式
-        if (json.type === 'progress' || json.hasOwnProperty('percent') || json.hasOwnProperty('current')) {
-            // 进度报告 - 修复：确保必填字段存在
-            const current = json.current || 0;
-            const total = json.total || 1;
-            let progress = 0;
-
-            if (json.percent !== undefined) {
-                progress = json.percent;
-            } else if (current > 0 && total > 0) {
-                progress = (current / total) * 100;
-            }
-
-            progress = Math.min(100, Math.max(0, progress)); // 确保在 0-100 范围内
-
-            const payload = {
-                sent: isSend ? current : 0,
-                received: !isSend ? current : 0,
-                total: total,
-                progress: progress,
-                speed: (json.speed_mbps || json.average_speed_mbps || 0) / 8, // 转换为 MB/s
-                remainingBytes: json.remaining_bytes || (total - current),
-                elapsedSeconds: json.elapsed_seconds || 0
-            };
-
-            // 🔧 修复点：确保发送正确的事件名称
-            const eventName = isSend ? 'file-send-progress' : 'file-transfer-progress';
-            console.log(`[HRUFT] 发送进度事件: ${eventName}, 进度: ${progress}%`);
-            safeSend(eventName, payload);
-
-        } else if (json.meta) {
-            // 最终统计报告 (新版 HRUFT 格式)
-            const meta = json.meta;
-            const completeData = {
-                fileName: meta.filename || fileName || '未知文件',
-                fileSize: meta.filesize || 0,
-                sourceMD5: meta.remote_hash || meta.source_md5 || 'N/A',
-                receivedMD5: meta.local_hash || meta.received_md5 || 'N/A',
-                match: meta.hash_match !== undefined ? meta.hash_match : true,
-                duration: meta.duration_sec || 0,
-                protocol: 'HRUFT',
-                stats: json,
-                averageSpeed: meta.avg_speed_mbps || 0,
-                maxSpeed: json.max_speed_mbps || 0,
-                networkQuality: json.network_health || 'unknown'
-            };
-
-            const completeEventName = isSend ? 'file-send-complete' : 'file-transfer-complete';
-            console.log(`[HRUFT] 发送完成事件: ${completeEventName}`);
-            safeSend(completeEventName, completeData);
-
-            // 输出详细统计
-            safeSend('transfer-log', `✅ 传输完成: ${meta.filename || fileName || '未知文件'}`);
-
-        } else {
-            // 其他消息作为日志输出
-            safeSend('transfer-log', `[HRUFT JSON] ${JSON.stringify(json)}`);
-        }
-    },
-
-    // ---------------- TCP 备用逻辑 (简化版) ----------------
-    sendTcp: (ip, port, filePath) => {
-        const socket = new net.Socket();
-        const fileName = path.basename(filePath);
-        const fileSize = fs.statSync(filePath).size;
-        let sent = 0;
-
-        socket.connect(port, ip, () => {
-            mainWindow.webContents.send('file-send-start', {fileName, fileSize, md5: 'N/A'});
-            // 发送元数据头
-            const meta = JSON.stringify({fileName, fileSize});
-            socket.write(meta + '\n###END_METADATA###\n');
-
-            const stream = fs.createReadStream(filePath);
-            stream.on('data', chunk => {
-                const ok = socket.write(chunk);
-                sent += chunk.length;
-                if (!ok) stream.pause();
-
-                // 进度通知
-                if (mainWindow) {
-                    mainWindow.webContents.send('file-send-progress', {
-                        sent, total: fileSize, progress: (sent / fileSize * 100).toFixed(1), speed: 0
-                    });
-                }
-            });
-            socket.on('drain', () => stream.resume());
-            stream.on('end', () => {
-                socket.end();
-                if (mainWindow) mainWindow.webContents.send('file-send-complete', {
-                    fileName,
-                    fileSize,
-                    protocol: 'TCP'
-                });
-            });
-        });
-
-        socket.on('error', (err) => {
-            console.error('[TCP] 发送错误:', err);
-            safeSend('file-send-error', {error: err.message});
-        });
-    },
-
     cleanup: () => {
         FileTransferModule.stopServer();
-    }
+    },
+    // 添加在 FileTransferModule 对象内
+    formatFileSize: (bytes) => {
+        if (bytes === 0) return '0 B';
+
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+
+        return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${units[i]}`;
+    },
 };
