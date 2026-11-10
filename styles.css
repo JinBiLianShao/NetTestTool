@@ -1044,3 +1044,32 @@ input:disabled, select:disabled {
 .progress-info strong {
     color: #e9ecef;
 }
+/* ============ Toast 提示 ============ */
+#toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: none;
+}
+.toast {
+    background: rgba(30, 30, 50, 0.95);
+    border: 1px solid rgba(108, 92, 231, 0.4);
+    border-radius: 8px;
+    padding: 12px 18px;
+    color: #e9ecef;
+    font-size: 13px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    transform: translateX(30px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    max-width: 360px;
+    pointer-events: auto;
+}
+.toast.show { opacity: 1; transform: translateX(0); }
+.toast.toast-success { border-color: rgba(0, 217, 163, 0.6); }
+.toast.toast-error { border-color: rgba(255, 71, 87, 0.6); }
+.toast.toast-warning { border-color: rgba(255, 165, 2, 0.6); }

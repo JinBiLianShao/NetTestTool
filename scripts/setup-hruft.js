@@ -1,6 +1,5 @@
 // HRUFT部署和配置脚本
 const fs = require('fs');
-const path = require('path');
 
 console.log('🔧 NetTestTool Pro - HRUFT部署工具');
 console.log('==================================');
@@ -11,15 +10,7 @@ const arch = process.arch;
 console.log(`检测到系统: ${platform} ${arch}`);
 
 // 检查目录结构
-const directories = [
-    'bin',
-    'bin/windows',
-    'bin/linux',
-    'bin/mac',
-    'config',
-    'logs',
-    'temp'
-];
+const directories = ['bin', 'bin/windows', 'bin/linux', 'bin/mac'];
 
 directories.forEach(dir => {
     if (!fs.existsSync(dir)) {
@@ -53,35 +44,6 @@ if (currentFile && fs.existsSync(currentFile)) {
     console.log('   - Linux: bin/linux/hruft');
     console.log('   - macOS: bin/mac/hruft');
 }
-
-// 创建默认配置文件
-const config = {
-    hruft: {
-        defaultPort: 5202,
-        maxConcurrentTransfers: 5,
-        logLevel: 'info',
-        bufferSize: 16 * 1024 * 1024, // 16MB
-        windowSize: 32,
-        packetSize: 1400,
-        bandwidth: 0 // 0 = unlimited
-    },
-    network: {
-        scanTimeout: 500,
-        pingInterval: 1000,
-        maxScanIPs: 254
-    },
-    app: {
-        maxLogSize: 10 * 1024 * 1024, // 10MB
-        autoSaveHistory: true,
-        theme: 'dark'
-    }
-};
-
-fs.writeFileSync(
-    'config/default.json',
-    JSON.stringify(config, null, 2)
-);
-console.log('✅ 配置文件已创建: config/default.json');
 
 console.log('\n🎯 部署完成！');
 console.log('运行以下命令启动应用:');

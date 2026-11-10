@@ -196,3 +196,38 @@ describe('单位换算与输出解析', () => {
     expect(c.formatIperfError('some unknown error')).toContain('⚠️');
   });
 });
+
+describe('expandSubnet 网段展开', () => {
+  test('/24 展开出 254 个可用主机地址', () => {
+    const list = c.expandSubnet('192.168.1.10', '255.255.255.0');
+    expect(list).toHaveLength(254);
+    expect(list[0]).toBe('192.168.1.1');
+    expect(list[253]).toBe('192.168.1.254');
+    expect(list).not.toContain('192.168.1.0');
+    expect(list).not.toContain('192.168.1.255');
+  });
+
+  test('/30 只含两个可用地址', () => {
+    expect(c.expandSubnet('10.0.0.5', '/30')).toEqual(['10.0.0.5', '10.0.0.6']);
+  });
+
+  test('大网段收敛到 IP 所在 /24，避免万级地址盲扫', () => {
+    const list = c.expandSubnet('10.1.2.3', '255.255.0.0');
+    expect(list).toHaveLength(254);
+    expect(list[0]).toBe('10.1.2.1');
+    const list8 = c.expandSubnet('10.1.2.3', '/8');
+    expect(list8).toHaveLength(254);
+    expect(list8[0]).toBe('10.1.2.1');
+  });
+
+  test('缺省掩码按 /24；非连续掩码退化 /24；非法值抛错', () => {
+    expect(c.expandSubnet('172.16.5.9')).toHaveLength(254);
+    expect(c.expandSubnet('172.16.5.9')[0]).toBe('172.16.5.1');
+    const weird = c.expandSubnet('192.168.7.20', '255.255.0.255');
+    expect(weird).toHaveLength(254);
+    expect(weird[0]).toBe('192.168.7.1');
+    expect(() => c.expandSubnet('bad-ip', '255.255.255.0')).toThrow(/无效/);
+    expect(() => c.expandSubnet('1.2.3.4', '999.0.0.0')).toThrow(/无效/);
+    expect(() => c.expandSubnet('1.2.3.4', '/40')).toThrow(/无效/);
+  });
+});

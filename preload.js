@@ -236,6 +236,15 @@ contextBridge.exposeInMainWorld('api', {
   },
 
 
+  /**
+   * 监听自动更新状态（仅打包环境有事件）
+   * @param {Function} callback - (statusObj) => void
+   */
+  onUpdaterStatus: (callback) => {
+    ipcRenderer.removeAllListeners('updater-status');
+    ipcRenderer.on('updater-status', (_, data) => callback(data));
+  },
+
   // ========================================================================
   //                          6. 应用级控制 (可选)
   // ========================================================================
@@ -249,6 +258,7 @@ contextBridge.exposeInMainWorld('api', {
    */
   removeAllListeners: () => {
     const channels = [
+      'updater-status',
       'ping-reply', 'scan-status', 'scan-device-found',
       'tp-data', 'tp-log', 'transfer-log',
       'file-send-start', 'file-transfer-start', 'file-transfer-complete', 'file-send-complete',

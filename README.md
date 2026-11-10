@@ -2,7 +2,7 @@
 
 一站式网络测试工具：网卡信息、Ping、局域网扫描、iPerf 2 吞吐量测试，以及基于 HRUFT 的可靠 UDP 文件传输。基于 Electron + Node.js，界面为深色主题。
 
-> 当前版本：**v1.5.6**。本项目采用 [MIT License](LICENSE)。
+> 当前版本：**v1.5.7**。本项目采用 [MIT License](LICENSE)。
 
 ## 功能
 
@@ -10,7 +10,7 @@
 | --- | --- |
 | 网络信息 | 列出本机非回环 IPv4 网卡、掩码、MAC 与系统 ARP 表 |
 | Ping | 自定义目标、间隔与包大小，Chart.js 实时绘制延迟曲线并统计最小/平均/最大 |
-| 局域网扫描 | 扫描 /24 网段（254 个地址，最多 20 并发），显示在线设备 IP/MAC 与进度 |
+| 局域网扫描 | 按网卡掩码计算扫描范围（大网段自动收敛到所在 /24，最多 20 并发），显示在线设备 IP/MAC 与进度 |
 | 吞吐量测试 | 内置 iPerf 2，支持服务端/客户端、TCP/UDP，实时带宽曲线与丢包提示 |
 | 文件传输 | HRUFT（可靠 UDP，BLAKE3 校验）与标准 TCP 双模式，含进度、速度与剩余时间 |
 
@@ -36,7 +36,7 @@ npm start
 测试文件全部放在项目目录 `tests/` 下：
 
 ```bash
-npm test              # 27 个用例：纯逻辑 + 真实 TCP socket + 真实 iperf2/HRUFT 二进制
+npm test              # 31 个用例：纯逻辑 + 真实 TCP socket + 真实 iperf2/HRUFT 二进制
 npm run test:coverage # 生成 coverage/ 报告
 ```
 
@@ -83,6 +83,10 @@ Linux 无法产出可验证的 macOS DMG，因此本仓库的 Release 提供 Win
 - 所有外部命令使用 `spawn` + 参数数组，用户输入经白名单校验，不拼接 shell 字符串。
 - 接收端对远端提供的文件名做净化，拒绝路径穿越，且只写入用户选定的保存目录。
 - 渲染进程隔离（`contextIsolation: true`、`nodeIntegration: false`），网络派生数据写入 DOM 前统一转义。
+
+## 自动更新
+
+Windows 安装版与 Linux 版内置基于 electron-updater 的自动更新，发布渠道为本仓库的 GitHub Releases。应用启动后在后台检查新版本，发现新版本自动下载并在退出时安装（进度以应用内 toast 提示）。便携版（Portable）不参与自动更新。
 
 ## 常见问题
 

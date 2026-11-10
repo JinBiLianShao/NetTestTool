@@ -36,6 +36,20 @@ const StateManager = {
 };
 
 // ==================== 2. UI 基础控制 ====================
+function showToast(message, type = 'info', duration = 3000) {
+    const container = document.getElementById('toast-container');
+    if (!container) return alert(message);
+    const toast = document.createElement('div');
+    toast.className = 'toast toast-' + type;
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('show'));
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, ch => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -117,7 +131,10 @@ const NetworkInfoModule = {
         }
     },
 
+    lastInterfaces: [],
+
     updateScanSelectors(ifaces) {
+        this.lastInterfaces = ifaces || [];
         const select = document.getElementById('scan-interface');
         if (!select) return;
         select.innerHTML = ifaces.map(i =>
@@ -130,7 +147,7 @@ const NetworkInfoModule = {
 const PingModule = {
     initChart() {
         const ctx = document.getElementById('pingChart').getContext('2d');
-        StateManager.charts.ping = new Chart(ctx, {
+        StateManager.charts.ping = new window.Chart(ctx, {
             type: 'line',
             data: {
                 labels: [],
@@ -177,7 +194,7 @@ const PingModule = {
             };
 
             if (!config.target) {
-                alert('请输入目标地址');
+                showToast('请输入目标地址', 'warning');
                 return;
             }
 
@@ -197,7 +214,7 @@ const PingModule = {
     handleReply(data) {
         UIController.log('ping-output', data.trim());
 
-        const timeMatch = data.match(/时间[=<]([\d\.]+)ms/i) || data.match(/time[=<]([\d\.]+)ms/i);
+        const timeMatch = data.match(/时间[=<]([\d.]+)ms/i) || data.match(/time[=<]([\d.]+)ms/i);
         if (timeMatch) {
             const ms = parseFloat(timeMatch[1]);
             const chart = StateManager.charts.ping;
@@ -235,8 +252,11 @@ const NetworkScanModule = {
         const btn = document.getElementById('btn-scan');
 
         if (!StateManager.isScanning) {
+            const selectedIp = document.getElementById('scan-interface').value;
+            const iface = (this.lastInterfaces || []).find(i => i.ip === selectedIp);
             const config = {
-                ip: document.getElementById('scan-interface').value,
+                ip: selectedIp,
+                netmask: iface ? iface.netmask : undefined,
                 timeout: parseInt(document.getElementById('scan-timeout').value) || 200
             };
 
@@ -364,7 +384,7 @@ const ThroughputModule = {
 
     initChart() {
         const ctx = document.getElementById('tpChart').getContext('2d');
-        StateManager.charts.throughput = new Chart(ctx, {
+        StateManager.charts.throughput = new window.Chart(ctx, {
             type: 'line',
             data: {
                 labels: [],
@@ -442,7 +462,7 @@ const ThroughputModule = {
             };
 
             if (!config.ip) {
-                alert('请输入目标服务器地址');
+                showToast('请输入目标服务器地址', 'warning');
                 return;
             }
 
@@ -517,7 +537,7 @@ const FileTransferModule = {
         const port = parseInt(document.getElementById('transfer-target-port').value);
 
         if (!ip || !this.selectedFile) {
-            alert('请检查 IP 和文件选择');
+            showToast('请检查 IP 和文件选择', 'warning');
             return;
         }
 
@@ -553,7 +573,7 @@ const FileTransferModule = {
         const port = document.getElementById('transfer-recv-port').value;
 
         if (!path) {
-            alert('请选择保存路径');
+            showToast('请选择保存路径', 'warning');
             return;
         }
 
@@ -842,7 +862,7 @@ window.startTransferServer = () => FileTransferModule.startServer();
 
 window.copyIp = (ip) => {
     navigator.clipboard.writeText(ip);
-    alert(`✅ IP 已复制: ${ip}`);
+    showToast('已复制: ' + ip, 'success');
 };
 
 // 页面加载完成后初始化
@@ -861,6 +881,14 @@ document.addEventListener('DOMContentLoaded', () => {
     window.api.onTpData((speed) => ThroughputModule.handleData(speed));
     window.api.onTpLog((msg) => UIController.log('tp-log', msg));
     window.api.onTransferLog((msg) => UIController.log('transfer-log-output', msg));
+
+    if (window.api.onUpdaterStatus) {
+        window.api.onUpdaterStatus((data) => {
+            if (!data) return;
+            if (data.state === 'available') showToast(data.message || '发现新版本，正在后台下载…', 'info');
+            if (data.state === 'downloaded') showToast(data.message || '新版本已就绪，退出应用时将自动安装', 'success', 8000);
+        });
+    }
 
     // 🔧 修复点: 正确绑定进度事件
 
