@@ -1,50 +1,53 @@
-// 构建资产文件脚本
+'use strict';
+/**
+ * 从仓库自带的 main.ico 生成 electron-builder 需要的构建资源。
+ * 幂等：已存在且非空的产物默认跳过，--force 可强制重建。
+ */
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const root = path.resolve(__dirname, '..');
+const force = process.argv.includes('--force');
+const buildDir = path.join(root, 'build');
+const iconsDir = path.join(buildDir, 'icons');
+fs.mkdirSync(iconsDir, { recursive: true });
 
-console.log('📦 构建应用资产文件...');
-
-// 清理旧构建
-const distDir = 'dist';
-if (fs.existsSync(distDir)) {
-    fs.rmSync(distDir, { recursive: true });
-    console.log('🗑️  清理旧构建文件');
+function have(rel) {
+  const f = path.join(root, rel);
+  return !force && fs.existsSync(f) && fs.statSync(f).size > 0;
+}
+function run(args) {
+  try { execFileSync('magick', args, { cwd: root, stdio: 'pipe' }); }
+  catch (e) { execFileSync('convert', args, { cwd: root, stdio: 'pipe' }); }
 }
 
-// 创建必要目录
-['dist', 'build'].forEach(dir => {
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-});
-
-// 复制图标文件（如果有）
-const iconSources = {
-    win: 'assets/icons/icon.ico',
-    mac: 'assets/icons/icon.icns',
-    linux: 'assets/icons/'
-};
-
-Object.entries(iconSources).forEach(([platform, source]) => {
-    if (fs.existsSync(source)) {
-        const target = path.join('build', path.basename(source));
-        fs.copyFileSync(source, target);
-        console.log(`✅ 复制图标文件: ${source} -> ${target}`);
-    }
-});
-
-// 检查依赖
-try {
-    execSync('npm list', { stdio: 'pipe' });
-    console.log('✅ 依赖检查完成');
-} catch (error) {
-    console.warn('⚠️  依赖检查失败，请运行: npm install');
+const source = path.join(root, 'main.ico');
+if (!fs.existsSync(source)) {
+  console.error('❌ 缺少 main.ico，无法生成构建资源');
+  process.exit(1);
 }
 
-console.log('\n🎉 资产构建完成！');
-console.log('运行以下命令构建应用:');
-console.log('  npm run build          # 构建应用');
-console.log('  npm run build:win      # 仅构建Windows版本');
-console.log('  npm run build:mac      # 仅构建macOS版本');
-console.log('  npm run build:linux    # 仅构建Linux版本');
+if (!have('build/icon.png')) { run([source + '[0]', '-resize', '256x256', path.join(buildDir, 'icon.png')]); console.log('✅ build/icon.png'); }
+for (const s of [16, 24, 32, 48, 64, 96, 128, 256, 512]) {
+  const rel = `build/icons/${s}x${s}.png`;
+  if (have(rel)) continue;
+  run([source + '[0]', '-resize', `${s}x${s}`, path.join(root, rel)]);
+  console.log('✅ ' + rel);
+}
+if (!have('build/background.png')) {
+  run(['-size', '540x380', 'gradient:#1b1b2f-#0f0f1e', path.join(buildDir, 'background.png')]);
+  console.log('✅ build/background.png');
+}
+if (!have('build/icon.icns')) {
+  const script = `from PIL import Image
+import sys
+im = Image.open(sys.argv[1]).convert('RGBA')
+im.save(sys.argv[2], format='ICNS')`;
+  try {
+    execFileSync('python3', ['-c', script, path.join(buildDir, 'icon.png'), path.join(buildDir, 'icon.icns')], { cwd: root, stdio: 'pipe' });
+    console.log('✅ build/icon.icns');
+  } catch (e) {
+    console.warn('⚠️ 无法生成 ICNS（需要 Pillow）；macOS 构建会失败，Linux/Windows 不受影响。');
+  }
+}
+console.log('\n🎉 构建资源已就绪。');

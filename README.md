@@ -1,131 +1,104 @@
+# NetTestTool Pro
 
-# 🚀 NetTestTool Pro
+一站式网络测试工具：网卡信息、Ping、局域网扫描、iPerf 2 吞吐量测试，以及基于 HRUFT 的可靠 UDP 文件传输。基于 Electron + Node.js，界面为深色主题。
 
-**NetTestTool Pro** 是一款基于 Electron 开发的一站式专业网络测试工具。它集成了常规的网络诊断功能与高性能的自定义传输协议，旨在为开发者和网络工程师提供一个可视化、易用且功能强大的调试环境。
+> 当前版本：**v1.5.6**。本项目采用 [MIT License](LICENSE)。
 
----
+## 功能
 
-## ✨ 核心特性
+| 模块 | 说明 |
+| --- | --- |
+| 网络信息 | 列出本机非回环 IPv4 网卡、掩码、MAC 与系统 ARP 表 |
+| Ping | 自定义目标、间隔与包大小，Chart.js 实时绘制延迟曲线并统计最小/平均/最大 |
+| 局域网扫描 | 扫描 /24 网段（254 个地址，最多 20 并发），显示在线设备 IP/MAC 与进度 |
+| 吞吐量测试 | 内置 iPerf 2，支持服务端/客户端、TCP/UDP，实时带宽曲线与丢包提示 |
+| 文件传输 | HRUFT（可靠 UDP，BLAKE3 校验）与标准 TCP 双模式，含进度、速度与剩余时间 |
 
-* **📊 网络信息可视化**：实时查看本机网卡接口、IP 地址、MAC 地址及系统 ARP 表。
-* **⚡ 增强型 Ping 测试**：支持自定义频率与数据包大小，并结合 **Chart.js** 实现延迟波动的实时可视化呈现。
-* **🔍 局域网扫描**：快速扫描子网活跃设备，支持基础端口扫描功能。
-* **🚀 HRUFT 传输协议**：集成 **High-Reliability UDP File Transfer (HRUFT)** 协议，在恶劣网络环境下提供比传统 TCP 更高效、可靠的文件传输能力。
-* **📈 吞吐量测试 (iPerf)**：无缝集成 iPerf2 与 iPerf3，支持服务端/客户端模式，实时绘制带宽曲线。
-* **📂 双模式文件传输**：支持标准 TCP 传输与高性能 HRUFT 传输，内置传输进度、速度计算及剩余时间预测。
-* **🌙 现代深色主题**：精心设计的 UI 界面，兼顾专业感与长时间使用的舒适度。
+**关于 iPerf 版本**：界面与打包二进制只提供 **iPerf 2**。上游在 `6bd6ad6` 中移除了不稳定的 iPerf 3 支持，本版本沿用该决定。
 
----
+## 快速开始
 
-## 🛠️ 技术栈
+前置要求：Node.js 20+、npm 10+。
 
-* **Frontend**: HTML5, CSS3 (CSS Variables), JavaScript (ES6+)
-* **Runtime**: [Electron](https://www.electronjs.org/)
-* **Visualization**: [Chart.js](https://www.chartjs.org/)
-* **Backend Support**: Node.js `child_process`, `net`, `dgram`
-* **Third-party Binaries**: iPerf2, iPerf3, HRUFT Core
-
----
-
-## 🚀 快速开始
-
-### 前置要求
-
-* [Node.js](https://nodejs.org/) (建议 v16.x 或更高)
-* npm 或 yarn
-
-### 安装步骤
-
-1. **克隆仓库**
 ```bash
 git clone https://github.com/JinBiLianShao/NetTestTool.git
 cd NetTestTool
-
-```
-
-
-2. **安装依赖**
-```bash
 npm install
-或
-cnpm install
-
-```
-
-
-3. **配置二进制环境**
-   项目依赖于特定平台的二进制文件（HRUFT, iPerf）。运行以下脚本进行初始化：
-```bash
-npm run setup:binaries
-或
-npm run setup:hruft
-
-```
-
-
-4. **启动开发模式**
-```bash
+npm run build:assets   # 从 main.ico 生成 build/ 下的图标资源
+npm run setup:binaries # 准备 iPerf 2（Linux/macOS 链接系统命令，Windows 自动下载）
 npm start
-
 ```
 
+仓库已附带 `bin/linux/hruft`、`bin/windows/hruft.exe` 与 Windows 的 `iperf2.exe`。Linux 的 `bin/linux/iperf2` 由 iperf 2.2.1 源码静态编译产生，随包分发。macOS 的 HRUFT/iPerf 二进制需由对应平台自行提供（见 CI 工作流）。
 
+## 测试
 
----
+测试文件全部放在项目目录 `tests/` 下：
 
-## 📦 打包与构建
+```bash
+npm test              # 27 个用例：纯逻辑 + 真实 TCP socket + 真实 iperf2/HRUFT 二进制
+npm run test:coverage # 生成 coverage/ 报告
+```
 
-项目使用 `electron-builder` 进行跨平台打包。在执行构建前，脚本会自动运行 `pre-build-check.js` 确保所有平台的二进制文件就绪。
+- `tests/core.test.js`：输入白名单（命令注入防御）、参数构造、文件名净化、二进制元数据流解析、单位换算与 iperf/HRUFT 输出解析。
+- `tests/integration.test.js`：真实 TCP 传输（256 KB 随机二进制、中文文件名、逐字节分片、含非法 UTF-8 字节载荷）、真实 iPerf 2 本机跑一轮、HRUFT 二进制可执行性。
 
-* **Windows**: `npm run build:win`
-* **macOS**: `npm run build:mac`
-* **Linux**: `npm run build:linux`
-* **全平台**: `npm run build:all`
+## 打包
 
----
+```bash
+npm run build:assets          # 生成图标资源（幂等）
+npm run prebuild              # 校验当前平台二进制与构建资源
+npm run build:linux           # AppImage / deb / rpm
+npm run build:win             # NSIS 安装程序 / portable（Linux 上通过 wine + NSIS 交叉构建）
+npm run build:publishable     # 一次构建 Windows + Linux，不自动发布
+```
 
-## 📂 项目结构
+产物输出到 `app_file/`。RPM 未列入默认目标，因为部分构建环境缺少 `rpmbuild`（fpm 会因此中止整个构建）；如已安装 rpm 工具链，可运行 `npm run build:rpm` 单独产出 `.rpm`。
+
+| 平台 | 产物 | 构建环境 |
+| --- | --- | --- |
+| Windows x64 | `.exe` (NSIS)、portable `.exe` | Linux（wine + NSIS）或 Windows |
+| Linux x64 | `.AppImage`、`.deb` | Linux |
+| macOS | `.dmg`、`.zip` | **必须 macOS**（DMG 依赖 hdiutil，签名/公证需要 Apple 证书） |
+
+Linux 无法产出可验证的 macOS DMG，因此本仓库的 Release 提供 Windows 与 Linux 安装包；macOS 构建由 [`.github/workflows/release.yml`](.github/workflows/release.yml) 在 macOS runner 上完成。
+
+## 项目结构
 
 ```text
-├── bin/                # 核心二进制文件 (hruft, iperf)
-├── scripts/            # 构建与环境部署脚本
-├── main.js             # Electron 主进程逻辑 (系统交互, IPC 响应)
-├── preload.js          # 预加载脚本 (安全网桥)
-├── renderer.js         # 前端渲染层逻辑 (UI 控制, 图表渲染)
-├── index.html          # 主界面结构
-├── styles.css          # 现代深色主题样式
-└── package.json        # 项目配置与脚本定义
-
+├── main.js               # Electron 主进程：IPC、子进程、网络与文件传输
+├── preload.js            # contextBridge 安全网桥
+├── renderer.js           # 渲染进程：UI 与 Chart.js 图表
+├── index.html / styles.css
+├── lib/core.js           # 与 Electron 无关的纯逻辑（主进程与测试共用）
+├── bin/                  # 各平台 HRUFT 与 iPerf 2 二进制
+├── build/                # electron-builder 图标资源（由 build:assets 生成）
+├── scripts/              # 构建资源、二进制准备、预检脚本
+├── tests/                # 深度测试（项目内）
+└── .github/workflows/    # macOS 发版 CI
 ```
 
----
+## 安全说明
 
-## ⚙️ 常见问题
+- 所有外部命令使用 `spawn` + 参数数组，用户输入经白名单校验，不拼接 shell 字符串。
+- 接收端对远端提供的文件名做净化，拒绝路径穿越，且只写入用户选定的保存目录。
+- 渲染进程隔离（`contextIsolation: true`、`nodeIntegration: false`），网络派生数据写入 DOM 前统一转义。
 
-**Q: 为什么 HRUFT 无法启动？**
-A: 请确保 `bin/` 目录下对应操作系统的 `hruft` 可执行文件具有执行权限。在 Linux/macOS 上可运行 `chmod +x bin/xxx/hruft`。
+## 常见问题
 
-**Q: 支持测试哪些协议的吞吐量？**
-A: 目前深度集成了 iPerf2 和 iPerf3，可以测试 TCP 和 UDP 的带宽、抖动及丢包率。
+**Q: 吞吐量测试提示找不到 iPerf？**  
+A: 运行 `npm run setup:binaries`，或按平台安装 `iperf`（Debian/Ubuntu: `sudo apt install iperf`；Arch: `sudo pacman -S iperf2`；macOS: `brew install iperf`）后重跑。
 
----
+**Q: Linux 上 HRUFT 提示权限不足？**  
+A: 运行 `chmod +x bin/linux/hruft`（`npm run prebuild` 会自动修正）。
 
-## 🤝 贡献指南
+**Q: 为什么不提供 iPerf 3？**  
+A: 上游已移除该支持，界面与打包二进制统一为 iPerf 2。
 
-欢迎提交 Issue 或 Pull Request 来完善此项目！
+## 贡献
 
-1. Fork 本项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
+欢迎 Issue / Pull Request。提交前请确保 `npm test` 通过。
 
----
+## 许可
 
-## 📄 开源协议
-
-本项目采用 **MIT License**。详情请参阅 [LICENSE](https://www.google.com/search?q=LICENSE) 文件。
-
----
-
-**如果您觉得这个工具有帮助，请给一个 ⭐️ Star！**
+[MIT](LICENSE) © 2026 JinBiLianShao

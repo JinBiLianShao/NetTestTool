@@ -1,170 +1,101 @@
+'use strict';
 /**
- * download-binaries.js - 自动下载 iPerf2/iPerf3 二进制文件
- * 使用方法: node scripts/download-binaries.js
+ * 准备 iPerf 2 二进制文件。
+ * - 若系统已安装 iperf/iperf2，创建符号链接到 bin/<platform>/iperf2
+ * - 否则提示对应平台的安装方式（Windows 可自动下载 zip 并解出 iperf2.exe）
+ * 仅处理 iPerf 2：本项目已移除 iPerf 3 支持。
  */
-
-const https = require('https');
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const https = require('https');
+const http = require('http');
+const { execFileSync } = require('child_process');
+const root = path.resolve(__dirname, '..');
 
-console.log('📦 NetTestTool Pro - 二进制文件下载工具\n');
+const target = process.env.NTT_TARGET_OS || process.platform;
+const dirByTarget = { win32: 'windows', linux: 'linux', darwin: 'mac' };
+const nameByTarget = { win32: 'iperf2.exe', linux: 'iperf2', darwin: 'iperf2' };
+const folder = dirByTarget[target];
+if (!folder) { console.error('❌ 未知平台: ' + target); process.exit(1); }
+const outDir = path.join(root, 'bin', folder);
+const outFile = path.join(outDir, nameByTarget[target]);
+fs.mkdirSync(outDir, { recursive: true });
 
-// iPerf 下载配置
-const IPERF_URLS = {
-    windows: {
-        iperf3: 'https://iperf.fr/download/windows/iperf-3.1.3-win64.zip',
-        iperf2: 'https://iperf.fr/download/windows/iperf-2.0.9-win64.zip'
-    },
-    linux: {
-        // Linux 建议通过包管理器安装,这里提供手动下载链接
-        note: '建议使用: sudo apt install iperf iperf3 (Debian/Ubuntu)'
-    },
-    darwin: {
-        note: '建议使用: brew install iperf iperf3'
-    }
-};
+if (fs.existsSync(outFile)) {
+  console.log(`✅ 已存在: ${path.relative(root, outFile)}`);
+  process.exit(0);
+}
 
-// 创建必要目录
-const dirs = [
-    'bin',
-    'bin/windows',
-    'bin/linux',
-    'bin/mac',
-    'temp'
-];
-
-dirs.forEach(dir => {
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-        console.log(`✅ 创建目录: ${dir}`);
-    }
-});
-
-// 下载文件函数
-function downloadFile(url, dest) {
-    return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-        const lib = url.startsWith('https') ? https : http;
-
-        console.log(`📥 下载中: ${url}`);
-
-        lib.get(url, (response) => {
-            if (response.statusCode === 302 || response.statusCode === 301) {
-                // 处理重定向
-                return downloadFile(response.headers.location, dest).then(resolve).catch(reject);
-            }
-
-            response.pipe(file);
-
-            file.on('finish', () => {
-                file.close();
-                console.log(`✅ 下载完成: ${dest}`);
-                resolve();
-            });
-        }).on('error', (err) => {
-            fs.unlinkSync(dest);
-            reject(err);
-        });
+function download(url, dest, redirects) {
+  redirects = redirects || 0;
+  if (redirects > 5) return Promise.reject(new Error('重定向次数过多'));
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https:') ? https : http;
+    const req = lib.get(url, res => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+        res.resume();
+        const next = new URL(res.headers.location, url).toString();
+        return download(next, dest, redirects + 1).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error('HTTP ' + res.statusCode));
+      }
+      const file = fs.createWriteStream(dest);
+      res.pipe(file);
+      file.on('finish', () => file.close(resolve));
+      file.on('error', reject);
     });
+    req.on('error', e => { try { fs.unlinkSync(dest); } catch (_) {} reject(e); });
+    req.setTimeout(30000, () => req.destroy(new Error('下载超时')));
+  });
 }
 
-// Windows 平台下载
-async function downloadWindows() {
-    console.log('\n🪟 检测到 Windows 平台');
-
-    const tempDir = 'temp';
-
-    try {
-        // 下载 iPerf3
-        const iperf3Zip = path.join(tempDir, 'iperf3.zip');
-        await downloadFile(IPERF_URLS.windows.iperf3, iperf3Zip);
-
-        // 解压 (需要 7-Zip 或 PowerShell)
-        console.log('📦 解压 iPerf3...');
-        try {
-            execSync(`powershell -command "Expand-Archive -Path '${iperf3Zip}' -DestinationPath '${tempDir}/iperf3' -Force"`);
-
-            // 查找可执行文件
-            const files = fs.readdirSync(path.join(tempDir, 'iperf3'), { recursive: true });
-            const exeFile = files.find(f => f.endsWith('iperf3.exe'));
-
-            if (exeFile) {
-                fs.copyFileSync(
-                    path.join(tempDir, 'iperf3', exeFile),
-                    'bin/windows/iperf3.exe'
-                );
-                console.log('✅ iPerf3 已安装');
-            }
-        } catch (e) {
-            console.warn('⚠️  解压失败,请手动解压并放置到 bin/windows/');
-        }
-
-        // 同样处理 iPerf2
-        // ...
-
-    } catch (error) {
-        console.error('❌ 下载失败:', error.message);
-        console.log('\n请手动下载:');
-        console.log('iPerf3: https://iperf.fr/iperf-download.php');
-        console.log('iPerf2: https://iperf.fr/iperf-download.php');
-    }
-}
-
-// Linux/Mac 提示
-function showUnixInstructions() {
-    const platform = process.platform;
-    console.log(`\n🐧 检测到 ${platform} 平台`);
-    console.log('\n推荐安装方式:');
-
-    if (platform === 'linux') {
-        console.log('  Debian/Ubuntu: sudo apt install iperf iperf3');
-        console.log('  RHEL/CentOS:   sudo yum install iperf iperf3');
-        console.log('  Arch Linux:    sudo pacman -S iperf iperf3');
-    } else if (platform === 'darwin') {
-        console.log('  Homebrew:      brew install iperf iperf3');
-    }
-
-    console.log('\n安装后创建软链接:');
-    console.log(`  ln -s $(which iperf) bin/${platform === 'darwin' ? 'mac' : 'linux'}/iperf2`);
-    console.log(`  ln -s $(which iperf3) bin/${platform === 'darwin' ? 'mac' : 'linux'}/iperf3`);
-}
-
-// HRUFT 检查
-function checkHruft() {
-    console.log('\n🚀 HRUFT 可执行文件检查:');
-
-    const hruftPaths = {
-        windows: 'bin/windows/hruft.exe',
-        linux: 'bin/linux/hruft',
-        darwin: 'bin/mac/hruft'
-    };
-
-    Object.entries(hruftPaths).forEach(([platform, filePath]) => {
-        if (fs.existsSync(filePath)) {
-            console.log(`  ✅ ${platform}: ${filePath}`);
-        } else {
-            console.log(`  ❌ ${platform}: ${filePath} (未找到)`);
-        }
-    });
-
-    console.log('\n💡 请将编译好的 HRUFT 可执行文件放置到对应目录');
-}
-
-// 主函数
 async function main() {
-    const platform = process.platform;
-
-    if (platform === 'win32') {
-        await downloadWindows();
-    } else {
-        showUnixInstructions();
+  if (target !== 'win32') {
+    for (const cmd of ['iperf', 'iperf2']) {
+      try {
+        const bin = execFileSync('which', [cmd], { encoding: 'utf8' }).trim();
+        if (bin) {
+          fs.symlinkSync(bin, outFile);
+          console.log(`✅ 已链接系统 ${cmd}: ${bin} -> ${path.relative(root, outFile)}`);
+          return;
+        }
+      } catch (_) {}
     }
+    const hint = target === 'linux'
+      ? 'Debian/Ubuntu: sudo apt install iperf    |    Arch: sudo pacman -S iperf2'
+      : 'brew install iperf';
+    console.log('⚠️ 未找到系统 iPerf 2，请安装后重跑本脚本：');
+    console.log('   ' + hint);
+    console.log('   或手动放置二进制到 ' + path.relative(root, outFile));
+    process.exit(1);
+  }
 
-    checkHruft();
-
-    console.log('\n🎉 完成! 请查看上述输出了解缺失的文件');
+  const url = 'https://iperf.fr/download/windows/iperf-2.0.9-win64.zip';
+  const zip = path.join(root, 'temp', 'iperf2.zip');
+  fs.mkdirSync(path.dirname(zip), { recursive: true });
+  try {
+    console.log('📥 下载 ' + url);
+    await download(url, zip);
+    const tmp = path.join(root, 'temp', 'iperf2-extract');
+    fs.rmSync(tmp, { recursive: true, force: true });
+    execFileSync('7z', ['x', '-y', '-o' + tmp, zip], { stdio: 'pipe' });
+    const found = [];
+    (function walk(d) {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const f = path.join(d, e.name);
+        if (e.isDirectory()) walk(f);
+        else if (/iperf2?\.exe$/i.test(e.name)) found.push(f);
+      }
+    })(tmp);
+    if (!found.length) throw new Error('zip 中未找到 iperf2.exe');
+    fs.copyFileSync(found[0], outFile);
+    console.log('✅ 已安装 ' + path.relative(root, outFile));
+  } catch (e) {
+    console.error('❌ 自动下载失败: ' + e.message);
+    console.error('   请从 https://iperf.fr/iperf-download.php 手动下载并放到 ' + path.relative(root, outFile));
+    process.exit(1);
+  }
 }
-
-main().catch(console.error);
+main();

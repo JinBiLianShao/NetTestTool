@@ -1,1 +1,11 @@
-node_modules
+node_modules/
+app_file/
+dist/
+build/*.png.tmp
+coverage/
+temp/
+logs/
+config/
+*.log
+.DS_Store
+Thumbs.db

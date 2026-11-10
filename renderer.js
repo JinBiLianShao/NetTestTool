@@ -36,6 +36,12 @@ const StateManager = {
 };
 
 // ==================== 2. UI 基础控制 ====================
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
 const UIController = {
     showTab(tabId) {
         document.querySelectorAll('.nav-item').forEach(el => {
@@ -95,11 +101,11 @@ const NetworkInfoModule = {
                 const card = document.createElement('div');
                 card.className = 'card info-card';
                 card.innerHTML = `
-                    <div class="card-header">🌐 ${iface.name}</div>
+                    <div class="card-header">🌐 ${escapeHtml(iface.name)}</div>
                     <div class="card-body">
-                        <p>IP: <span>${iface.ip}</span></p>
-                        <p>Mask: <span>${iface.netmask}</span></p>
-                        <p>MAC: <span>${iface.mac}</span></p>
+                        <p>IP: <span>${escapeHtml(iface.ip)}</span></p>
+                        <p>Mask: <span>${escapeHtml(iface.netmask)}</span></p>
+                        <p>MAC: <span>${escapeHtml(iface.mac)}</span></p>
                     </div>
                 `;
                 listContainer.appendChild(card);
@@ -107,7 +113,7 @@ const NetworkInfoModule = {
 
             this.updateScanSelectors(ifaces);
         } catch (e) {
-            listContainer.innerHTML = `<div class="error">❌ 获取失败: ${e.message}</div>`;
+            listContainer.innerHTML = `<div class="error">❌ 获取失败: ${escapeHtml(e.message)}</div>`;
         }
     },
 
@@ -115,7 +121,7 @@ const NetworkInfoModule = {
         const select = document.getElementById('scan-interface');
         if (!select) return;
         select.innerHTML = ifaces.map(i =>
-            `<option value="${i.ip}">${i.name} (${i.ip})</option>`
+            `<option value="${escapeHtml(i.ip)}">${escapeHtml(i.name)} (${escapeHtml(i.ip)})</option>`
         ).join('');
     }
 };
@@ -195,6 +201,7 @@ const PingModule = {
         if (timeMatch) {
             const ms = parseFloat(timeMatch[1]);
             const chart = StateManager.charts.ping;
+            if (!chart) return;
             const stats = StateManager.pingStats;
 
             chart.data.labels.push('');
@@ -331,13 +338,16 @@ const NetworkScanModule = {
         if (!tbody) return;
 
         const row = document.createElement('tr');
+        const ip = escapeHtml(device.ip);
         row.innerHTML = `
-            <td>${device.ip}</td>
-            <td><code>${device.mac}</code></td>
-            <td>${device.vendor}</td>
-            <td><span class="badge-success">${device.time}</span></td>
-            <td><button class="btn-sm" onclick="copyIp('${device.ip}')">📋 复制</button></td>
+            <td>${ip}</td>
+            <td><code>${escapeHtml(device.mac)}</code></td>
+            <td>${escapeHtml(device.vendor)}</td>
+            <td><span class="badge-success">${escapeHtml(device.time)}</span></td>
+            <td><button class="btn-sm" data-copy-ip="${ip}">📋 复制</button></td>
         `;
+        const copyBtn = row.querySelector('[data-copy-ip]');
+        if (copyBtn) copyBtn.addEventListener('click', () => navigator.clipboard?.writeText(copyBtn.dataset.copyIp));
         tbody.appendChild(row);
 
         this.deviceCount++;
@@ -452,6 +462,7 @@ const ThroughputModule = {
     handleData(speedStr) {
         const speed = parseFloat(speedStr);
         const chart = StateManager.charts.throughput;
+        if (!chart || !Number.isFinite(speed)) return;
 
         chart.data.labels.push('');
         chart.data.datasets[0].data.push(speed);
@@ -474,7 +485,7 @@ const ThroughputModule = {
 // ==================== 7. 文件传输模块 (HRUFT) ====================
 const FileTransferModule = {
     selectedFile: null,
-    lastProgressUpdate: 0, // 上次进度更新时间戳
+    progressThrottle: {last: 0, interval: 100},
     progressUpdateInterval: 100, // 进度更新间隔 (ms)
 
     switchMode(mode) {
@@ -523,7 +534,7 @@ const FileTransferModule = {
         };
 
         // 重置进度
-        this.lastProgressUpdate = 0;
+        FileTransferModule.progressThrottle.last = 0;
         document.getElementById('transfer-progress').style.display = 'block';
         UIController.updateProgress('transfer-progress-bar', null, 0);
         document.getElementById('transfer-status-text').textContent = '准备发送...';
@@ -589,28 +600,26 @@ const FileTransferModule = {
 
 
     handleProgress: (data) => {
-        console.log('[Renderer] 收到进度数据:', data);
 
         // 确保数据有效
         if (!data || typeof data.progress !== 'number') {
-            console.warn('[Renderer] 无效的进度数据:', data);
             return;
         }
 
         const now = Date.now();
 
-        // 限制更新频率（最少100ms更新一次）
-        if (now - this.lastProgressUpdate < 100 && data.progress < 99) {
+        // 限制更新频率（最少100ms更新一次）；原来的箭头函数里 this 指向错误，节流从未生效。
+        const throttle = FileTransferModule.progressThrottle;
+        if (now - throttle.last < throttle.interval && data.progress < 99) {
             return;
         }
-        this.lastProgressUpdate = now;
+        throttle.last = now;
 
         const isSend = StateManager.transferMode === 'send';
 
         // 确保进度条容器可见
         const progressDiv = document.getElementById('transfer-progress');
         if (progressDiv && progressDiv.style.display === 'none') {
-            console.log('[Renderer] 显示进度条容器');
             progressDiv.style.display = 'block';
         }
 
@@ -854,49 +863,41 @@ document.addEventListener('DOMContentLoaded', () => {
     window.api.onTransferLog((msg) => UIController.log('transfer-log-output', msg));
 
     // 🔧 修复点: 正确绑定进度事件
-    console.log('[Renderer] 绑定文件传输事件监听器');
 
     // 发送进度事件
     window.api.onFileSendProgress((data) => {
-        console.log('[Renderer] 收到 file-send-progress 事件');
         StateManager.transferMode = 'send';
         FileTransferModule.handleProgress(data);
     });
 
     // 接收进度事件
     window.api.onFileTransferProgress((data) => {
-        console.log('[Renderer] 收到 file-transfer-progress 事件');
         StateManager.transferMode = 'receive';
         FileTransferModule.handleProgress(data);
     });
 
     // 完成事件
     window.api.onFileSendComplete((data) => {
-        console.log('[Renderer] 收到 file-send-complete 事件');
         StateManager.transferMode = 'send';
         FileTransferModule.handleComplete(data);
     });
 
     window.api.onFileTransferComplete((data) => {
-        console.log('[Renderer] 收到 file-transfer-complete 事件');
         StateManager.transferMode = 'receive';
         FileTransferModule.handleComplete(data);
     });
 
     // 错误事件
     window.api.onFileSendError((data) => {
-        console.log('[Renderer] 收到 file-send-error 事件');
         FileTransferModule.handleError(data);
     });
 
     window.api.onFileTransferError((data) => {
-        console.log('[Renderer] 收到 file-transfer-error 事件');
         FileTransferModule.handleError(data);
     });
 
     // 开始事件（如果支持）
     window.api.onFileSendStart && window.api.onFileSendStart((data) => {
-        console.log('[Renderer] 收到 file-send-start 事件');
         UIController.log('transfer-log-output',
             `🚀 开始发送: ${data.fileName} (${(data.fileSize / 1024 / 1024).toFixed(2)} MB)`,
             'info');

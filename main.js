@@ -1,12 +1,11 @@
 const {app, BrowserWindow, ipcMain, dialog} = require('electron');
 const path = require('path');
-const {spawn, exec} = require('child_process');
+const {spawn} = require('child_process');
 const os = require('os');
 const net = require('net');
-const dgram = require('dgram');
 const fs = require('fs');
-const crypto = require('crypto');
 const iconv = require('iconv-lite');
+const core = require('./lib/core');
 
 // ============================================================================
 //                               全局配置 & 状态
@@ -36,31 +35,10 @@ function getResourcesPath() {
  */
 function getBinPath() {
     const resourcesPath = getResourcesPath();
-    return path.join(resourcesPath, 'bin');
+    if (!isDev) return path.join(resourcesPath, 'bin');
+    const folder = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'mac' : 'linux';
+    return path.join(resourcesPath, 'bin', folder);
 }
-
-// HRUFT 路径配置 (根据 README)
-const HRUFT_CONFIG = {
-    win32: {path: 'bin/windows/hruft.exe', cmd: 'hruft.exe'},
-    linux: {path: 'bin/linux/hruft', cmd: './hruft'},
-    darwin: {path: 'bin/mac/hruft', cmd: './hruft'}
-};
-
-// 在全局配置中添加 iPerf 路径
-const IPERF_CONFIG = {
-    win32: {
-        iperf2: 'bin/windows/iperf2.exe',
-        iperf3: 'bin/windows/iperf3.exe'
-    },
-    linux: {
-        iperf2: 'bin/linux/iperf2',
-        iperf3: 'bin/linux/iperf3'
-    },
-    darwin: {
-        iperf2: 'bin/mac/iperf2',
-        iperf3: 'bin/mac/iperf3'
-    }
-};
 
 // ============================================================================
 //                               核心工具函数
@@ -87,28 +65,8 @@ function getHruftPath() {
 
     const execPath = path.join(binDir, execName);
 
-    console.log('[HRUFT] 路径解析:', {
-        isDev,
-        platform,
-        resourcesPath: getResourcesPath(),
-        binDir,
-        execPath,
-        exists: fs.existsSync(execPath)
-    });
-
-    // 检查文件是否存在
     if (!fs.existsSync(execPath)) {
-        console.error(`[HRUFT] 可执行文件不存在: ${execPath}`);
-
-        // 尝试查找备用路径 (开发环境)
-        if (isDev) {
-            const devPath = path.join(__dirname, 'bin', platform === 'darwin' ? 'mac' : platform, execName);
-            if (fs.existsSync(devPath)) {
-                console.log(`[HRUFT] 使用开发路径: ${devPath}`);
-                return {path: devPath, command: execName};
-            }
-        }
-
+        console.warn(`[HRUFT] 可执行文件不存在: ${execPath}`);
         return {path: null, command: execName};
     }
 
@@ -143,26 +101,8 @@ function getIperfPath(version) {
 
     const execPath = path.join(binDir, execName);
 
-    console.log(`[iPerf] 路径解析 (${version}):`, {
-        isDev,
-        platform,
-        binDir,
-        execPath,
-        exists: fs.existsSync(execPath)
-    });
-
     if (!fs.existsSync(execPath)) {
-        console.error(`[iPerf] ${version} 不存在: ${execPath}`);
-
-        // 尝试开发环境路径
-        if (isDev) {
-            const devPath = path.join(__dirname, 'bin', platform === 'darwin' ? 'mac' : platform, execName);
-            if (fs.existsSync(devPath)) {
-                console.log(`[iPerf] 使用开发路径: ${devPath}`);
-                return devPath;
-            }
-        }
-
+        console.warn(`[iPerf] ${version} 不存在: ${execPath}`);
         return null;
     }
 
@@ -287,19 +227,24 @@ app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
-// 退出前清理所有子进程
-/*app.on('before-quit', () => {
-    FileTransferModule.cleanup();
-    ScanModule.cleanup();
-    PingModule.cleanup();
-    ThroughputModule.cleanup();
-});*/
+// 退出前清理所有子进程（window-all-closed 在 macOS 上不触发，这里兜底）
+app.on('before-quit', () => {
+    for (const mod of [FileTransferModule, ScanModule, PingModule, ThroughputModule]) {
+        try { mod.cleanup(); } catch (e) { console.warn('[Cleanup] 清理失败:', e.message); }
+    }
+});
 
 // ============================================================================
 //                               IPC 路由注册
 // ============================================================================
 
 function setupIpcHandlers() {
+    ipcMain.on('app:devtools', () => {
+        if (mainWindow && !mainWindow.isDestroyed() && isDev) {
+            mainWindow.webContents.openDevTools();
+        }
+    });
+
     // 1. 系统信息
     ipcMain.handle('net:interfaces', SystemInfoModule.getInterfaces);
 
@@ -356,48 +301,66 @@ const SystemInfoModule = {
 // ============================================================================
 const PingModule = {
     timer: null,
+    children: new Set(),
 
     start: (config) => {
         PingModule.stop();
-        const {target, interval, size} = config;
-        const intervalMs = Math.max(100, interval * 1000);
+        const {target, interval, size} = config || {};
+        const intervalMs = Math.max(100, core.clampInt(interval, 0.1, 3600, 1) * 1000);
 
-        safeSend('ping-reply', `开始 Ping ${target}...\n`); // 使用 safeSend
+        let args;
+        try {
+            args = core.pingArgs(target, size, process.platform);
+        } catch (e) {
+            safeSend('ping-reply', `❌ ${e.message}\n`);
+            return;
+        }
 
-        PingModule.timer = setInterval(() => {
-            let cmd;
-            if (isWin) {
-                cmd = `cmd.exe /C "chcp 437 && ping -n 1 -l ${size} ${target}"`;
-            } else {
-                cmd = `ping -c 1 -s ${size} ${target}`;
+        safeSend('ping-reply', `开始 Ping ${target}...\n`);
+
+        const tick = () => {
+            // 上一轮尚未结束时跳过，避免子进程堆积。
+            if (PingModule.children.size > 0) return;
+            let child;
+            try {
+                child = spawn('ping', args, {windowsHide: true, env: {...process.env, LC_ALL: 'C'}});
+            } catch (e) {
+                safeSend('ping-reply', `❌ 无法启动 ping: ${e.message}\n`);
+                return;
             }
-
-            const env = isWin ? process.env : {...process.env, LC_ALL: 'C'};
-
-            exec(cmd, {encoding: 'binary', env, timeout: 2000}, (err, stdout, stderr) => {
-                const output = decodeOutput(Buffer.from(stdout, 'binary'));
-                let reply = '';
-
-                if (output.includes('TTL=') || output.includes('ttl=')) {
-                    const timeMatch = output.match(/time[=<]([\d\.]+)ms/i);
-                    const time = timeMatch ? `时间=${timeMatch[1]}ms` : '';
-                    reply = `来自 ${target} 的回复: 字节=${size} ${time}`;
-                } else if (output.includes('timed out')) {
-                    reply = `请求超时`;
+            PingModule.children.add(child);
+            let out = Buffer.alloc(0);
+            const timer = setTimeout(() => child.kill(), 3000);
+            child.stdout.on('data', d => { out = Buffer.concat([out, d]); });
+            child.on('error', e => safeSend('ping-reply', `❌ ${e.message}\n`));
+            child.on('close', () => {
+                clearTimeout(timer);
+                PingModule.children.delete(child);
+                const output = decodeOutput(out);
+                let reply;
+                if (/ttl=/i.test(output)) {
+                    const m = output.match(/time[=<]([\d.]+)\s*ms/i);
+                    reply = `来自 ${target} 的回复: 字节=${args[3]} ${m ? `时间=${m[1]}ms` : ''}`;
+                } else if (/timed out|超时|100% packet loss/i.test(output)) {
+                    reply = '请求超时';
                 } else {
-                    reply = isWin ? output.split('\n')[2] : output;
+                    reply = output.trim().split('\n')[0] || '无响应';
                 }
-
-                safeSend('ping-reply', `${reply}\n`); // 使用 safeSend
+                safeSend('ping-reply', `${reply}\n`);
             });
-        }, intervalMs);
+        };
+
+        tick();
+        PingModule.timer = setInterval(tick, intervalMs);
     },
 
     stop: () => {
         if (PingModule.timer) {
             clearInterval(PingModule.timer);
             PingModule.timer = null;
-            safeSend('ping-reply', `\n--- Ping 已停止 ---\n`); // 使用 safeSend
+            PingModule.children.forEach(c => c.kill());
+            PingModule.children.clear();
+            safeSend('ping-reply', '\n--- Ping 已停止 ---\n');
         }
     },
 
@@ -410,128 +373,105 @@ const PingModule = {
 const ArpModule = {
     getTable: async () => {
         return new Promise((resolve) => {
-            exec('arp -a', {encoding: 'binary'}, (err, stdout, stderr) => {
-                if (err) resolve(`Error: ${err.message}`);
-                resolve(decodeOutput(Buffer.from(stdout, 'binary')));
-            });
+            const child = spawn('arp', ['-a'], {windowsHide: true});
+            let out = Buffer.alloc(0);
+            child.stdout.on('data', d => { out = Buffer.concat([out, d]); });
+            child.on('error', e => resolve(`Error: ${e.message}`));
+            child.on('close', () => resolve(decodeOutput(out)));
         });
     }
 };
 
 const ScanModule = {
     inProgress: false,
+    children: new Set(),
 
     start: async (config) => {
         if (ScanModule.inProgress) return;
+        const {ip, timeout} = config || {};
+        if (!core.isValidIPv4(ip)) {
+            safeSend('scan-status', {status: 'error', error: '无效的 IP 地址', message: '扫描出错: 无效的 IP 地址'});
+            return;
+        }
         ScanModule.inProgress = true;
 
-        const {ip, timeout} = config;
+        const subnet = ip.split('.').slice(0, 3).join('.');
+        const ips = [];
+        for (let i = 1; i < 255; i++) ips.push(`${subnet}.${i}`);
 
-        try {
-            // 1. 计算网段
-            const subnet = ip.split('.').slice(0, 3).join('.');
-            const ips = [];
-            for (let i = 1; i < 255; i++) ips.push(`${subnet}.${i}`);
+        const totalIps = ips.length;
+        let scannedCount = 0;
+        let foundCount = 0;
+        let lastEmit = 0;
 
-            const totalIps = ips.length;
-            let scannedCount = 0;
-            let foundCount = 0;
-
-            // 发送初始状态
+        const emit = (force) => {
+            const now = Date.now();
+            if (!force && now - lastEmit < 100 && scannedCount !== totalIps) return;
+            lastEmit = now;
+            const percent = Math.round((scannedCount / totalIps) * 100);
             safeSend('scan-status', {
                 status: 'scanning',
-                message: `正在扫描 ${totalIps} 个地址...`,
-                total: totalIps,
-                current: 0,
-                found: 0
+                message: `扫描中... ${percent}% (${scannedCount}/${totalIps})`,
+                total: totalIps, current: scannedCount, found: foundCount, percent
             });
+        };
 
-            // 2. 定义单个 IP 扫描任务
-            const scanTask = async (targetIp) => {
-                if (!ScanModule.inProgress) return;
+        safeSend('scan-status', {status: 'scanning', message: `正在扫描 ${totalIps} 个地址...`, total: totalIps, current: 0, found: 0, percent: 0});
 
-                const pingCmd = isWin
-                    ? `ping -n 1 -w ${timeout} ${targetIp}`
-                    : `ping -c 1 -W ${timeout / 1000} ${targetIp}`;
-
-                try {
-                    await new Promise((resolve) => {
-                        exec(pingCmd, {timeout: timeout + 500}, (err, stdout) => {
-                            scannedCount++;
-
-                            // 🔧 修复点 1: 改进进度更新逻辑
-                            const shouldUpdate =
-                                scannedCount % 5 === 0 ||           // 每5个更新
-                                scannedCount === totalIps ||         // 最后一个必须更新
-                                scannedCount === 1;                  // 第一个也更新
-
-                            if (shouldUpdate) {
-                                const percent = Math.round((scannedCount / totalIps) * 100);
-                                safeSend('scan-status', {
-                                    status: 'scanning',
-                                    message: `扫描中... ${percent}% (${scannedCount}/${totalIps})`,
-                                    total: totalIps,
-                                    current: scannedCount,
-                                    found: foundCount
-                                });
-                            }
-
-                            // 检查是否 Ping 通
-                            if (!err && (stdout.includes('TTL=') || stdout.includes('ttl='))) {
-                                foundCount++;
-
-                                // 获取 MAC 地址
-                                exec(`arp -a ${targetIp}`, (e, out) => {
-                                    let mac = 'Unknown';
-                                    if (!e) {
-                                        const match = out.match(/([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})/);
-                                        if (match) mac = match[0];
-                                    }
-
-                                    safeSend('scan-device-found', {
-                                        ip: targetIp,
-                                        mac: mac,
-                                        vendor: 'Unknown',
-                                        time: `<${timeout}ms`
-                                    });
-
-                                    resolve();
-                                });
-                            } else {
-                                resolve();
-                            }
+        const scanTask = (targetIp) => new Promise((resolve) => {
+            if (!ScanModule.inProgress) return resolve();
+            let args;
+            try { args = core.scanPingArgs(targetIp, timeout, process.platform); }
+            catch (e) { return resolve(); }
+            let child;
+            try { child = spawn('ping', args, {windowsHide: true, env: {...process.env, LC_ALL: 'C'}}); }
+            catch (e) { scannedCount++; return resolve(); }
+            ScanModule.children.add(child);
+            let out = Buffer.alloc(0);
+            const timer = setTimeout(() => child.kill(), core.clampInt(timeout, 50, 10000, 500) + 1000);
+            child.stdout.on('data', d => { out = Buffer.concat([out, d]); });
+            child.on('error', () => {});
+            child.on('close', () => {
+                clearTimeout(timer);
+                ScanModule.children.delete(child);
+                if (!ScanModule.inProgress) return resolve();
+                scannedCount++;
+                emit(false);
+                const text = decodeOutput(out);
+                if (/ttl=/i.test(text)) {
+                    foundCount++;
+                    const arp = spawn('arp', ['-a', targetIp], {windowsHide: true});
+                    let arpOut = Buffer.alloc(0);
+                    arp.stdout.on('data', d => { arpOut = Buffer.concat([arpOut, d]); });
+                    arp.on('error', () => {});
+                    arp.on('close', () => {
+                        const match = decodeOutput(arpOut).match(/([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})/);
+                        safeSend('scan-device-found', {
+                            ip: targetIp,
+                            mac: match ? match[0] : 'Unknown',
+                            vendor: 'Unknown',
+                            time: `<${core.clampInt(timeout, 50, 10000, 500)}ms`
                         });
+                        resolve();
                     });
-                } catch (e) {
-                    scannedCount++;
-                    // 超时也算扫描完成
+                } else {
+                    resolve();
                 }
-            };
+            });
+        });
 
-            // 3. 并发执行扫描 (限制并发数 20)
-            await runWithConcurrency(
-                ips.map(ip => () => scanTask(ip)),
-                20
-            );
-
-            // 🔧 修复点 2: 确保最终状态为 100%
+        try {
+            await runWithConcurrency(ips.map(target => () => scanTask(target)), 20);
             if (ScanModule.inProgress) {
+                scannedCount = totalIps;
                 safeSend('scan-status', {
                     status: 'completed',
                     message: `扫描完成 - 发现 ${foundCount} 台设备`,
-                    total: totalIps,
-                    current: totalIps,  // 确保是总数
-                    found: foundCount,
-                    percent: 100        // 明确指定 100%
+                    total: totalIps, current: totalIps, found: foundCount, percent: 100
                 });
             }
-
         } catch (e) {
-            safeSend('scan-status', {
-                status: 'error',
-                error: e.message,
-                message: `扫描出错: ${e.message}`
-            });
+            safeSend('scan-status', {status: 'error', error: e.message, message: `扫描出错: ${e.message}`});
         } finally {
             ScanModule.inProgress = false;
         }
@@ -539,17 +479,16 @@ const ScanModule = {
 
     stop: () => {
         ScanModule.inProgress = false;
-        safeSend('scan-status', {
-            status: 'stopped',
-            message: '扫描已停止',
-            percent: 0  // 重置进度
-        });
+        ScanModule.children.forEach(c => c.kill());
+        ScanModule.children.clear();
+        safeSend('scan-status', {status: 'stopped', message: '扫描已停止', percent: 0});
     },
 
     cleanup: () => ScanModule.stop()
 };
 
 // ============================================================================
+//                          模块 4:// ============================================================================
 //                          模块 4: 重写吞吐量测试模块 (iPerf 版本)
 // ============================================================================
 
@@ -569,12 +508,11 @@ const ThroughputModule = {
                 return resolve(`错误: ${version} 未找到`);
             }
 
-            const args = ['-s', '-p', port.toString(), '-i', '1'];
-            if (version === 'iperf2' && protocol === 'udp') {
-                args.push('-u');
-            }
+            let args;
+            try { args = core.iperfServerArgs(port, protocol, version); }
+            catch (e) { return resolve(`错误: ${e.message}`); }
 
-            const child = spawn(iperfPath, args);
+            const child = spawn(iperfPath, args, {windowsHide: true});
             ThroughputModule.serverProcess = child;
 
             // 修复点：确保 session 在进程启动瞬间初始化
@@ -608,6 +546,10 @@ const ThroughputModule = {
                 const text = decodeOutput(data);
                 const formatted = ThroughputModule.formatErrorOutput(text);
                 safeSend('tp-log', formatted);
+            });
+
+            child.on('error', (e) => {
+                safeSend('tp-log', `❌ 无法启动 ${version}: ${e.message}`);
             });
 
             child.on('close', (code) => {
@@ -660,15 +602,14 @@ const ThroughputModule = {
 
         // 修复点 2：严格按照 iperf3 帮助文档格式构建参数
         // Usage: iperf3 -c <host> -p <port> -t <time> -i 1 -f m
-        const args = ['-c', ip, '-p', port.toString(), '-t', duration.toString(), '-i', '1'];
-
-        if (protocol === 'udp') {
-            args.push('-u');
-            // 修复点 3：-b 参数格式必须为 "10M" 这种紧凑格式
-            args.push('-b', `${bandwidth}M`);
+        let args;
+        try { args = core.iperfClientArgs(config); }
+        catch (e) {
+            safeSend('tp-log', `❌ 错误: ${e.message}`);
+            return;
         }
 
-        const child = spawn(iperfPath, args);
+        const child = spawn(iperfPath, args, {windowsHide: true});
         ThroughputModule.clientProcess = child;
 
         // 发送开始消息
@@ -701,6 +642,10 @@ const ThroughputModule = {
             safeSend('tp-log', formatted);
         });
 
+        child.on('error', (e) => {
+            safeSend('tp-log', `❌ 无法启动 ${version}: ${e.message}`);
+        });
+
         child.on('close', (code) => {
             // 修复点 4：安全读取 session
             const summary = ThroughputModule.formatClientClose(code);
@@ -726,104 +671,19 @@ const ThroughputModule = {
     // ========== 格式化函数 ==========
 
     formatServerOutput: (line, isFirst) => {
-        line = line.trim();
-        if (!line) return null;
-
-        // 🎯 服务器启动消息
-        if (line.includes('Server listening')) {
-            const portMatch = line.match(/listening on (\d+)/);
-            const port = portMatch ? portMatch[1] : 'unknown';
-            return `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎯 服务器监听中 | 端口: ${port}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+        const parsed = core.parseIperfLine(line);
+        if (parsed.message === null) return null;
+        const text = parsed.message;
+        if (text.includes('Server listening')) {
+            const m = text.match(/listening on (\d+)/);
+            return `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎯 服务器监听中 | 端口: ${m ? m[1] : 'unknown'}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
         }
-
-        // 🔗 客户端连接
-        if (line.includes('Accepted connection')) {
-            const ipMatch = line.match(/from ([0-9\.]+), port (\d+)/);
-            if (ipMatch) {
-                const clientIp = ipMatch[1];
-                const clientPort = ipMatch[2];
-                return `\n📥 客户端已连接\n   来源: ${clientIp}:${clientPort}\n   时间: ${new Date().toLocaleTimeString()}`;
-            }
+        if (text.includes('Accepted connection')) {
+            const m = text.match(/from ([0-9.]+), port (\d+)/);
+            if (m) return `\n📥 客户端已连接\n   来源: ${m[1]}:${m[2]}\n   时间: ${new Date().toLocaleTimeString()}`;
         }
-
-        // 📊 本地连接建立
-        if (line.includes('local') && line.includes('connected to')) {
-            const match = line.match(/local ([0-9\.]+) port (\d+) connected to ([0-9\.]+) port (\d+)/);
-            if (match) {
-                return `   本地: ${match[1]}:${match[2]} ←→ 远程: ${match[3]}:${match[4]}`;
-            }
-        }
-
-        // 📋 表头 - 保留原始输出
-        if (line.includes('Interval') && line.includes('Transfer') && line.includes('Bandwidth')) {
-            return line;
-        }
-
-        // 📈 实时数据 (包含丢包率) - 返回原始输出但提取速度值
-        const detailedDataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+([\d\.]+\s+ms)\s+([\d\.]+)\/([\d\.]+)\s+\(([\d\.]+)%\)/);
-        if (detailedDataMatch) {
-            const [, id, start, end, transfer, bandwidth, jitter, lost, total, lossRate] = detailedDataMatch;
-
-            // 提取速度值用于图表
-            const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
-            if (speedMatch) {
-                const speed = parseFloat(speedMatch[1]);
-                const unit = speedMatch[2];
-                let speedMbps = speed;
-
-                if (unit === 'G') speedMbps = speed * 1000;
-                else if (unit === 'K') speedMbps = speed / 1000;
-
-                // 发送速度数据到图表
-                safeSend('tp-data', speedMbps.toFixed(2));
-            }
-
-            // 返回原始输出
-            return line;
-        }
-
-        // 📈 实时数据 (基本格式) - 返回原始输出但提取速度值
-        const basicDataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
-        if (basicDataMatch && !detailedDataMatch) {
-            const [, id, start, end, transfer, bandwidth] = basicDataMatch;
-
-            // 提取速度值用于图表
-            const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
-            if (speedMatch) {
-                const speed = parseFloat(speedMatch[1]);
-                const unit = speedMatch[2];
-                let speedMbps = speed;
-
-                if (unit === 'G') speedMbps = speed * 1000;
-                else if (unit === 'K') speedMbps = speed / 1000;
-
-                // 发送速度数据到图表
-                safeSend('tp-data', speedMbps.toFixed(2));
-            }
-
-            // 返回原始输出
-            return line;
-        }
-
-        // 📊 最终汇总
-        if (line.includes('sender') || line.includes('receiver')) {
-            const summaryMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+(sender|receiver)/);
-            if (summaryMatch) {
-                const [, id, start, end, transfer, bandwidth, role] = summaryMatch;
-                const roleIcon = role === 'sender' ? '📤' : '📥';
-                const roleText = role === 'sender' ? '发送端' : '接收端';
-
-                return `\n${'━'.repeat(60)}\n${roleIcon} ${roleText}汇总 (${start}-${end}秒)\n   总传输: ${transfer}\n   平均速度: ${bandwidth}\n${'━'.repeat(60)}`;
-            }
-        }
-
-        // 🔚 分隔线
-        if (line.match(/^-+$/)) {
-            return null; // 忽略分隔线
-        }
-
-        // 其他信息保持原样
-        return line;
+        if (parsed.speed !== null) safeSend('tp-data', parsed.speed.toFixed(2));
+        return text;
     },
 
     formatClientStart: (config) => {
@@ -848,174 +708,36 @@ const ThroughputModule = {
     },
 
     formatClientOutput: (line) => {
-        line = line.trim();
-        if (!line) return {message: null, speed: null};
-
-        // 🔗 连接建立
-        if (line.includes('Connecting to host')) {
-            const match = line.match(/Connecting to host ([^,]+), port (\d+)/);
-            if (match) {
+        const parsed = core.parseIperfLine(line);
+        if (parsed.message === null) return {message: null, speed: null};
+        const text = parsed.message;
+        if (text.includes('Connecting to host')) {
+            const m = text.match(/Connecting to host ([^,]+), port (\d+)/);
+            if (m) return {message: `🔗 正在连接到 ${m[1]}:${m[2]}...`, speed: null};
+        }
+        if (/sender|receiver/.test(text) && /\[\s*\d+\]/.test(text)) {
+            const m = text.match(/\[\s*\d+\]\s+([\d.]+)-([\d.]+)\s+sec\s+([\d.]+\s+\w+Bytes)\s+([\d.]+\s+\w+bits\/sec)\s+(sender|receiver)/);
+            if (m) {
+                const role = m[5];
                 return {
-                    message: `🔗 正在连接到 ${match[1]}:${match[2]}...`,
+                    message: `\n${'━'.repeat(60)}\n${role === 'sender' ? '📤 发送端' : '📥 接收端'}汇总 (${m[1]}-${m[2]}秒)\n   总传输: ${m[3]}\n   平均速度: ${m[4]}\n${'━'.repeat(60)}`,
                     speed: null
                 };
             }
         }
-
-        // 📋 表头 - 返回原始输出
-        if (line.includes('Interval') && line.includes('Transfer') && line.includes('Bandwidth')) {
-            return {
-                message: line,
-                speed: null
-            };
+        const lossMatch = text.match(/([\d.]+)\s*\/\s*([\d.]+)\s*\(([\d.]+)%\)\s*$/);
+        if (lossMatch && /datagrams|Jitter|Lost|ms/i.test(text)) {
+            const loss = parseFloat(lossMatch[3]);
+            const emoji = loss < 1 ? '✅' : loss < 5 ? '⚠️' : '❌';
+            return {message: `${emoji} UDP 丢包率: ${loss}% (${lossMatch[1]}/${lossMatch[2]})`, speed: null};
         }
-
-        // 📈 实时数据 - 返回原始输出但提取速度值
-        const iperf2DataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)/);
-        if (iperf2DataMatch) {
-            const [, id, start, end, transfer, bandwidth] = iperf2DataMatch;
-
-            // 提取速度值
-            const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
-            let speedMbps = null;
-
-            if (speedMatch) {
-                const speed = parseFloat(speedMatch[1]);
-                const unit = speedMatch[2];
-                speedMbps = speed;
-
-                if (unit === 'G') speedMbps = speed * 1000;
-                else if (unit === 'K') speedMbps = speed / 1000;
-            }
-
-            // 记录到会话
-            if (ThroughputModule.currentSession) {
-                ThroughputModule.currentSession.intervals.push({
-                    interval: `${start}-${end}`,
-                    transfer: transfer,
-                    bandwidth: bandwidth,
-                    speed: speedMbps
-                });
-            }
-
-            // 返回原始输出
-            return {
-                message: line,
-                speed: speedMbps ? speedMbps.toFixed(2) : null
-            };
+        if (parsed.speed !== null && ThroughputModule.currentSession) {
+            ThroughputModule.currentSession.intervals.push({
+                interval: text.match(/[\d.]+-[\d.]+/)?.[0] || '',
+                transfer: '', bandwidth: '', speed: parsed.speed
+            });
         }
-
-        // 📈 实时数据 - iPerf3 UDP 格式（带丢包率）- 返回原始输出但提取速度值
-        const detailedDataMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+([\d\.]+\s+ms)\s+([\d\.]+)\/([\d\.]+)\s+\(([\d\.]+)%\)/);
-        if (detailedDataMatch) {
-            const [, id, start, end, transfer, bandwidth, jitter, lost, total, lossRate] = detailedDataMatch;
-
-            // 提取速度值
-            const speedMatch = bandwidth.match(/([\d\.]+)\s+(\w+)bits/);
-            let speedMbps = null;
-
-            if (speedMatch) {
-                const speed = parseFloat(speedMatch[1]);
-                const unit = speedMatch[2];
-                speedMbps = speed;
-
-                if (unit === 'G') speedMbps = speed * 1000;
-                else if (unit === 'K') speedMbps = speed / 1000;
-            }
-
-            // 记录到会话
-            if (ThroughputModule.currentSession) {
-                ThroughputModule.currentSession.intervals.push({
-                    interval: `${start}-${end}`,
-                    transfer: transfer,
-                    bandwidth: bandwidth,
-                    speed: speedMbps
-                });
-            }
-
-            // 返回原始输出
-            return {
-                message: line,
-                speed: speedMbps ? speedMbps.toFixed(2) : null
-            };
-        }
-
-        // 📊 最终汇总
-        if (line.includes('sender') || line.includes('receiver')) {
-            const summaryMatch = line.match(/\[\s*(\d+)\]\s+([\d\.]+)-([\d\.]+)\s+sec\s+([\d\.]+\s+\w+Bytes)\s+([\d\.]+\s+\w+bits\/sec)\s+(sender|receiver)/);
-            if (summaryMatch) {
-                const [, id, start, end, transfer, bandwidth, role] = summaryMatch;
-                const roleIcon = role === 'sender' ? '📤' : '📥';
-                const roleText = role === 'sender' ? '发送端' : '接收端';
-
-                return {
-                    message: `\n${'━'.repeat(60)}\n${roleIcon} ${roleText}汇总 (${start}-${end}秒)\n   总传输: ${transfer}\n   平均速度: ${bandwidth}\n${'━'.repeat(60)}`,
-                    speed: null
-                };
-            }
-        }
-
-        // UDP 特有的丢包信息（增强版）
-        const currentProtocol = ThroughputModule.currentSession?.protocol;
-        if (currentProtocol === 'UDP' && (line.includes('datagrams') || line.includes('Jitter') || line.includes('Lost'))) {
-            // 匹配 iPerf2 UDP 输出格式: [ID] Interval       Transfer     Bandwidth        Jitter   Lost/Drop
-            const udpMatch = line.match(/\[\s*\d+\]\s+[\d\.]+-[\d\.]+\s+sec\s+[\d\.]+\s+\w+Bytes\s+[\d\.]+\s+\w+bits\/sec\s+[\d\.]+\s+ms\s+([\d\.]+)\/(\d+)\s+\(([\d\.]+)%\)/);
-            if (udpMatch) {
-                const lostPackets = udpMatch[1];
-                const totalPackets = udpMatch[2];
-                const lossRate = parseFloat(udpMatch[3]);
-                const emoji = lossRate < 1 ? '✅' : lossRate < 5 ? '⚠️' : '❌';
-                return {
-                    message: `${emoji} UDP 丢包率: ${lossRate}% (${lostPackets}/${totalPackets})`,
-                    speed: null
-                };
-            }
-
-            // 匹配 iPerf3 UDP 输出格式: [SUM] 0.00-10.00 sec 1.00 MBytes  838 Kbits/sec 0.000 ms  0/878 (0%)
-            const iperf3UdpMatch = line.match(/[\d\.]+\/[\d\.]+\s+\(([\d\.]+)%\)/);
-            if (iperf3UdpMatch) {
-                const lossRate = parseFloat(iperf3UdpMatch[1]);
-                const emoji = lossRate < 1 ? '✅' : lossRate < 5 ? '⚠️' : '❌';
-                return {
-                    message: `${emoji} UDP 丢包率: ${lossRate}%`,
-                    speed: null
-                };
-            }
-
-            // 匹配更通用的丢包率模式
-            const generalLossMatch = line.match(/([\d\.]+)%\s*(?:packet\s*)?loss|loss:\s*([\d\.]+)%|dropped:\s*([\d\.]+)%/i);
-            if (generalLossMatch) {
-                const lossRate = parseFloat(generalLossMatch[1] || generalLossMatch[2] || generalLossMatch[3]);
-                const emoji = lossRate < 1 ? '✅' : lossRate < 5 ? '⚠️' : '❌';
-                return {
-                    message: `${emoji} UDP 丢包率: ${lossRate}%`,
-                    speed: null
-                };
-            }
-
-            // 匹配 iPerf3 传输摘要中的丢包信息
-            if (line.includes('sender') || line.includes('receiver')) {
-                const summaryLossMatch = line.match(/\[\s*\d+\]\s+[\d\.]+-[\d\.]+\s+sec\s+[\d\.]+\s+\w+Bytes\s+[\d\.]+\s+\w+bits\/sec\s+[\d\.]+\s+ms\s+([\d\.]+)\/(\d+)\s+\(([\d\.]+)%\)/);
-                if (summaryLossMatch) {
-                    const lostPackets = summaryLossMatch[1];
-                    const totalPackets = summaryLossMatch[2];
-                    const lossRate = parseFloat(summaryLossMatch[3]);
-                    const emoji = lossRate < 1 ? '✅' : lossRate < 5 ? '⚠️' : '❌';
-                    return {
-                        message: `${emoji} UDP 丢包率: ${lossRate}% (${lostPackets}/${totalPackets})`,
-                        speed: null
-                    };
-                }
-            }
-        }
-
-        // 🔚 分隔线
-        if (line.match(/^-+$/)) {
-            return {message: null, speed: null};
-        }
-
-        // 其他信息 - 返回原始输出
-        return {message: line, speed: null};
+        return {message: text, speed: parsed.speed !== null ? parsed.speed.toFixed(2) : null};
     },
 
     formatClientClose: (code) => {
@@ -1086,26 +808,7 @@ const ThroughputModule = {
         return message;
     },
 
-    formatErrorOutput: (text) => {
-        text = text.trim();
-        if (!text) return null;
-
-        // 常见错误的友好提示
-        if (text.includes('Connection refused')) {
-            return '❌ 连接被拒绝 - 请检查服务端是否已启动';
-        }
-        if (text.includes('No route to host')) {
-            return '❌ 无法到达主机 - 请检查网络连接和IP地址';
-        }
-        if (text.includes('Address already in use')) {
-            return '❌ 端口已被占用 - 请更换端口或关闭占用该端口的程序';
-        }
-        if (text.includes('Permission denied')) {
-            return '❌ 权限不足 - 某些端口可能需要管理员权限';
-        }
-
-        return `⚠️ ${text}`;
-    },
+    formatErrorOutput: (text) => core.formatIperfError(text) || '',
 
     cleanup: () => {
         ThroughputModule.stopClient();
@@ -1160,21 +863,14 @@ const FileTransferModule = {
         const transferId = `send-${Date.now()}`;
         const absoluteFilePath = path.resolve(filePath);
 
-        // 🔧 更新参数以匹配新版 HRUFT
-        const args = ['send', ip, port.toString(), absoluteFilePath];
-
-        // 添加可选参数 (适配新版参数名)
-        if (udtConfig) {
-            if (udtConfig.packetSize) {
-                args.push('--mss', udtConfig.packetSize.toString());
-            }
-            if (udtConfig.windowSize) {
-                args.push('--window', udtConfig.windowSize.toString());
-            }
+        let args;
+        try {
+            args = core.hruftSendArgs(ip, port, absoluteFilePath, udtConfig);
+        } catch (e) {
+            safeSend('transfer-log', `❌ ${e.message}`);
+            safeSend('file-send-error', {error: e.message});
+            return;
         }
-
-        // 🔧 启用详细输出以获取 JSON 统计
-        args.push('--detailed');
 
         if (mainWindow) {
             mainWindow.webContents.send('transfer-log', `[CMD] ${hruft.command} ${args.join(' ')}`);
@@ -1204,19 +900,14 @@ const FileTransferModule = {
         let stderrBuffer = '';
 
         child.stdout.on('data', (data) => {
-            const rawOutput = data.toString();
-            console.log(`[HRUFT发送原始输出] ${rawOutput}`);
-
-            // 按行分割
-            const lines = rawOutput.split(/\r?\n/);
-
+            stdoutBuffer += decodeOutput(data);
+            const lines = stdoutBuffer.split(/\r\n|\n|\r/);
+            stdoutBuffer = lines.pop() || '';
             lines.forEach(line => {
-                line = line.trim();
-                if (line) {
-                    FileTransferModule.parseHruftOutput(line, {
-                        mode: 'send',
-                        fileName,
-                        filePath: absoluteFilePath
+                const trimmed = line.trim();
+                if (trimmed) {
+                    FileTransferModule.parseHruftOutput(trimmed, {
+                        mode: 'send', fileName, filePath: absoluteFilePath, startTime: Date.now()
                     });
                 }
             });
@@ -1265,8 +956,13 @@ const FileTransferModule = {
                     return;
                 }
 
-                // 🔧 更新接收命令参数
-                const args = ['recv', port.toString(), absoluteSavePath, '--detailed'];
+                let args;
+                try {
+                    args = core.hruftRecvArgs(port, absoluteSavePath);
+                } catch (e) {
+                    resolve(`❌ ${e.message}`);
+                    return;
+                }
 
                 const spawnOptions = {
                     cwd: path.dirname(hruft.path)
@@ -1294,27 +990,12 @@ const FileTransferModule = {
                 let stderrBuffer = '';
 
                 child.stdout.on('data', data => {
-                    const rawOutput = data.toString();
-                    console.log(`[HRUFT接收原始输出]`, rawOutput); // 调试日志
-
-                    // 关键修复：同时按回车符(\r)和换行符(\n)分割
-                    // HRUFT使用 \r 进行进度更新，但其他消息可能使用 \n
-                    const lines = rawOutput.split(/\r\n|\n|\r/);
-
-                    // 过滤空行
-                    const nonEmptyLines = lines.filter(line => line.trim().length > 0);
-
-                    nonEmptyLines.forEach(line => {
-                        const trimmedLine = line.trim();
-
-                        // 跳过进度行中的重复输出（由于回车符导致）
-                        if (trimmedLine.startsWith('[Progress]')) {
-                            // 直接处理进度行
-                            FileTransferModule.parseHruftOutput(trimmedLine, receiveContext);
-                        } else if (trimmedLine) {
-                            // 其他消息正常处理
-                            FileTransferModule.parseHruftOutput(trimmedLine, receiveContext);
-                        }
+                    stdoutBuffer += decodeOutput(data);
+                    const lines = stdoutBuffer.split(/\r\n|\n|\r/);
+                    stdoutBuffer = lines.pop() || '';
+                    lines.forEach(line => {
+                        const trimmed = line.trim();
+                        if (trimmed) FileTransferModule.parseHruftOutput(trimmed, receiveContext);
                     });
                 });
 
@@ -1342,6 +1023,7 @@ const FileTransferModule = {
                 child.on('error', err => {
                     FileTransferModule.hruftProcesses.delete(pid);
                     safeSend('transfer-log', `❌ HRUFT 启动失败: ${err.message}`);
+                    safeSend('file-transfer-error', {error: err.message});
                 });
 
                 resolve(`HRUFT Pro (BLAKE3) 接收服务已启动\n监听端口: ${port}\n保存路径: ${absoluteSavePath}`);
@@ -1388,8 +1070,6 @@ const FileTransferModule = {
         line = line.trim();
         if (!line) return;
 
-        console.log(`[HRUFT解析] ${line}, 模式: ${context.mode}`);
-
         // 1. 先尝试解析 JSON（处理最终的统计报告）
         try {
             if (line.startsWith('{') && line.endsWith('}')) {
@@ -1411,12 +1091,10 @@ const FileTransferModule = {
                 const fileUnit = fileMatch[3].toUpperCase();
 
                 // 转换为字节
-                const sizeInBytes = FileTransferModule.convertToBytes(fileSize, fileUnit);
+                const sizeInBytes = core.toBytes(fileSize, fileUnit);
 
                 context.fileName = fileName;
                 context.totalBytes = sizeInBytes;
-
-                console.log(`[HRUFT] 文件信息: ${fileName}, 大小: ${sizeInBytes} bytes`);
 
                 if (context.mode === 'receive') {
                     // 发送接收开始事件
@@ -1434,7 +1112,7 @@ const FileTransferModule = {
         // 3. 解析进度信息 - 关键修复：支持回车符进度行
         if (line.startsWith('[Progress]') || line.startsWith('Progress')) {
             // 增强的进度解析，支持带和不带回车符
-            const progressData = FileTransferModule.parseProgressLineEnhanced(line);
+            const progressData = core.parseProgressLine(line);
             if (progressData) {
                 const { percent, currentBytes, totalBytes, speedMbps } = progressData;
 
@@ -1462,8 +1140,6 @@ const FileTransferModule = {
                     remainingBytes: Math.max(0, context.totalBytes - currentBytes),
                     elapsedSeconds: (Date.now() - (context.startTime || Date.now())) / 1000
                 };
-
-                console.log(`[HRUFT进度] 模式: ${context.mode}, 进度: ${percent}%, 当前: ${currentBytes}, 总计: ${context.totalBytes}`);
 
                 // 发送正确的进度事件
                 if (context.mode === 'receive') {
@@ -1505,75 +1181,6 @@ const FileTransferModule = {
         safeSend('transfer-log', `📝 ${line}`);
     },
 
-    // 增强的进度行解析函数
-    parseProgressLineEnhanced: (line) => {
-        // 移除可能的回车符和换行符
-        line = line.replace(/\r/g, '').replace(/\n/g, '').trim();
-
-        // 匹配 HRUFT 的进度格式：
-        // [Progress] 0.3% | 4.00 MB / 1.28 GB | Rate: 101.5 Mbps
-        // 或者不带速率： [Progress] 0.3% | 4.00 MB / 1.28 GB
-
-        // 首先尝试完整匹配（带速率）
-        const fullPattern = /\[Progress\]\s*([\d\.]+)%\s*\|\s*([\d\.]+)\s*([KMG]?B)\s*\/\s*([\d\.]+)\s*([KMG]?B)(?:\s*\|\s*Rate:\s*([\d\.]+)\s*Mbps)?/i;
-
-        const match = line.match(fullPattern);
-        if (match) {
-            const percent = parseFloat(match[1]) || 0;
-            const currentValue = parseFloat(match[2]) || 0;
-            const currentUnit = (match[3] || 'B').toUpperCase();
-            const totalValue = parseFloat(match[4]) || 0;
-            const totalUnit = (match[5] || 'B').toUpperCase();
-            const speedMbps = match[6] ? parseFloat(match[6]) : 0;
-
-            // 单位转换
-            const unitMap = {
-                'B': 1,
-                'KB': 1024,
-                'MB': 1024 * 1024,
-                'GB': 1024 * 1024 * 1024
-            };
-
-            const currentBytes = currentValue * (unitMap[currentUnit] || 1);
-            const totalBytes = totalValue * (unitMap[totalUnit] || 1);
-
-            return {
-                percent,
-                currentBytes,
-                totalBytes,
-                speedMbps
-            };
-        }
-
-        // 如果完整匹配失败，尝试只匹配百分比
-        const simplePattern = /\[Progress\]\s*([\d\.]+)%/;
-        const simpleMatch = line.match(simplePattern);
-        if (simpleMatch) {
-            return {
-                percent: parseFloat(simpleMatch[1]) || 0,
-                currentBytes: 0,
-                totalBytes: 0,
-                speedMbps: 0
-            };
-        }
-
-        return null;
-    },
-
-    // 单位转换函数
-    convertToBytes: (value, unit) => {
-        unit = unit.toUpperCase();
-        const multipliers = {
-            'B': 1,
-            'KB': 1024,
-            'MB': 1024 * 1024,
-            'GB': 1024 * 1024 * 1024,
-            'TB': 1024 * 1024 * 1024 * 1024
-        };
-
-        return value * (multipliers[unit] || 1);
-    },
-
     // 处理 JSON 数据
     handleHruftJson: (json, context) => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -1599,7 +1206,6 @@ const FileTransferModule = {
             };
 
             const completeEventName = isSend ? 'file-send-complete' : 'file-transfer-complete';
-            console.log(`[HRUFT完成] 发送事件: ${completeEventName}`);
             safeSend(completeEventName, completeData);
 
             // 输出详细统计
@@ -1646,296 +1252,176 @@ const FileTransferModule = {
     // ---------------- TCP 服务器 ----------------
     startTcpServer: (port, savePath) => {
         const server = net.createServer(socket => {
+            const parser = core.createMetadataParser();
             let fileName = `recv_${Date.now()}.bin`;
             let fileSize = 0;
             let received = 0;
-            let metaReceived = false;
             let writeStream = null;
-            let startTime = Date.now();
+            let finished = false;
+            const startTime = Date.now();
             let lastProgressTime = startTime;
             let lastBytes = 0;
 
+            const emitProgress = (force) => {
+                if (fileSize <= 0) return;
+                const now = Date.now();
+                if (!force && now - lastProgressTime < 100) return;
+                const elapsed = (now - startTime) / 1000;
+                const speed = elapsed > 0 ? ((received - lastBytes) / ((now - lastProgressTime) / 1000)) / (1024 * 1024) : 0;
+                safeSend('file-transfer-progress', {
+                    progress: Math.min(100, received / fileSize * 100),
+                    received, total: fileSize,
+                    speed: Math.max(0, speed),
+                    remainingBytes: Math.max(0, fileSize - received),
+                    elapsedSeconds: elapsed
+                });
+                lastProgressTime = now;
+                lastBytes = received;
+            };
+
+            const complete = () => {
+                if (finished) return;
+                finished = true;
+                const elapsed = (Date.now() - startTime) / 1000;
+                const avg = elapsed > 0 ? (received / elapsed) / (1024 * 1024) : 0;
+                if (writeStream) writeStream.end();
+                safeSend('file-transfer-progress', {
+                    progress: 100, received, total: fileSize || received,
+                    speed: 0, remainingBytes: 0, elapsedSeconds: elapsed
+                });
+                safeSend('file-transfer-complete', {
+                    fileName, fileSize: received,
+                    sourceMD5: 'N/A', receivedMD5: 'N/A', match: true,
+                    duration: elapsed, protocol: 'TCP',
+                    stats: {transfer: {bytes: received, time: elapsed}},
+                    averageSpeed: avg * 8, maxSpeed: avg * 8, networkQuality: 'unknown'
+                });
+                safeSend('transfer-log', `✅ TCP 接收完成: ${fileName} (${core.formatFileSize(received)})`);
+            };
+
             socket.on('data', chunk => {
-                if (!metaReceived) {
-                    const str = chunk.toString();
-                    if (str.includes('###END_METADATA###')) {
-                        const parts = str.split('###END_METADATA###');
-                        try {
-                            const meta = JSON.parse(parts[0]);
-                            fileName = meta.fileName || fileName;
-                            fileSize = meta.fileSize || 0;
-                            metaReceived = true;
-
-                            const fullSavePath = path.join(savePath, fileName);
-                            writeStream = fs.createWriteStream(fullSavePath);
-
-                            // 🔧 修复点1: 发送接收开始事件（与HRUFT一致）
-                            safeSend('file-transfer-start', {
-                                fileName,
-                                fileSize
-                            });
-
-                            // 发送初始日志
-                            safeSend('transfer-log', `📁 开始接收文件: ${fileName} (${FileTransferModule.formatFileSize(fileSize)})`);
-
-                            if (parts[1] && parts[1].length > 0) {
-                                writeStream.write(parts[1]);
-                                received += Buffer.byteLength(parts[1]);
-
-                                // 🔧 修复点2: 立即发送初始进度
-                                if (fileSize > 0) {
-                                    const now = Date.now();
-                                    const elapsedSeconds = (now - startTime) / 1000;
-                                    const speed = elapsedSeconds > 0 ? (received / elapsedSeconds) / (1024 * 1024) : 0;
-
-                                    safeSend('file-transfer-progress', {
-                                        progress: (received / fileSize * 100).toFixed(1),
-                                        received,
-                                        total: fileSize,
-                                        speed,
-                                        remainingBytes: fileSize - received,
-                                        elapsedSeconds
-                                    });
-
-                                    lastProgressTime = now;
-                                    lastBytes = received;
-                                }
-                            }
-                        } catch (e) {
-                            console.error('[TCP] 元数据解析失败:', e);
-                            safeSend('transfer-log', `❌ TCP 元数据解析失败: ${e.message}`);
-                        }
+                let payload = chunk;
+                if (!parser.done) {
+                    try {
+                        payload = parser.push(chunk);
+                    } catch (e) {
+                        safeSend('transfer-log', `❌ TCP 元数据解析失败: ${e.message}`);
+                        safeSend('file-transfer-error', {error: e.message});
+                        socket.destroy();
+                        return;
                     }
-                } else {
-                    if (writeStream) {
-                        writeStream.write(chunk);
-                    }
-                    received += chunk.length;
-
-                    // 🔧 修复点3: 优化进度更新频率和逻辑
-                    const now = Date.now();
-                    const timeDiff = now - lastProgressTime;
-
-                    // 每200ms更新一次，或当进度有明显变化时（1%以上）
-                    if (fileSize > 0 && (timeDiff > 200 || (received - lastBytes) / fileSize > 0.01)) {
-                        const elapsedSeconds = (now - startTime) / 1000;
-                        const speed = elapsedSeconds > 0 ? ((received - lastBytes) / (timeDiff / 1000)) / (1024 * 1024) : 0;
-
-                        const progressPayload = {
-                            progress: Math.min(100, (received / fileSize * 100).toFixed(1)),
-                            received,
-                            total: fileSize,
-                            speed: Math.max(0, speed), // 确保非负
-                            remainingBytes: Math.max(0, fileSize - received),
-                            elapsedSeconds: elapsedSeconds.toFixed(1)
-                        };
-
-                        console.log(`[TCP接收进度] ${progressPayload.progress}%, 速度: ${progressPayload.speed.toFixed(2)} MB/s`);
-                        safeSend('file-transfer-progress', progressPayload);
-
-                        lastProgressTime = now;
-                        lastBytes = received;
-                    }
+                    if (!parser.done) return;
+                    const meta = parser.meta;
+                    fileName = meta.fileName;
+                    fileSize = meta.fileSize;
+                    // 双重防护：即使解析器被绕过，也只写 savePath 内的安全文件名。
+                    const fullSavePath = path.join(savePath, core.safeFileName(fileName, `recv_${Date.now()}.bin`));
+                    writeStream = fs.createWriteStream(fullSavePath);
+                    writeStream.on('error', e => {
+                        safeSend('transfer-log', `❌ 写入文件失败: ${e.message}`);
+                        socket.destroy();
+                    });
+                    safeSend('file-transfer-start', {fileName, fileSize});
+                    safeSend('transfer-log', `📁 开始接收文件: ${fileName} (${core.formatFileSize(fileSize)})`);
+                }
+                if (payload.length && writeStream) {
+                    writeStream.write(payload);
+                    received += payload.length;
+                    emitProgress(false);
+                    if (fileSize > 0 && received >= fileSize) complete();
                 }
             });
 
-            socket.on('end', () => {
-                if (writeStream) {
-                    writeStream.end();
-                }
-
-                const elapsedSeconds = (Date.now() - startTime) / 1000;
-                const avgSpeed = elapsedSeconds > 0 ? (received / elapsedSeconds) / (1024 * 1024) : 0;
-
-                // 🔧 修复点4: 发送完成事件（与HRUFT结构一致）
-                const completeData = {
-                    fileName,
-                    fileSize: received,
-                    sourceMD5: 'N/A',  // TCP模式没有哈希校验
-                    receivedMD5: 'N/A',
-                    match: true,
-                    duration: elapsedSeconds,
-                    protocol: 'TCP',
-                    stats: {
-                        transfer: {
-                            bytes: received,
-                            time: elapsedSeconds
-                        }
-                    },
-                    averageSpeed: avgSpeed * 8, // MB/s to Mbps
-                    maxSpeed: avgSpeed * 8,
-                    networkQuality: 'unknown'
-                };
-
-                safeSend('file-transfer-complete', completeData);
-                safeSend('transfer-log', `✅ TCP 接收完成: ${fileName} (${FileTransferModule.formatFileSize(received)})`);
-                safeSend('transfer-log', `⏱️ 传输时间: ${elapsedSeconds.toFixed(2)} 秒`);
-                safeSend('transfer-log', `📈 平均速度: ${(avgSpeed * 8).toFixed(2)} Mbps`);
-            });
-
-            socket.on('error', (err) => {
-                console.error('[TCP] Socket 错误:', err);
-                if (writeStream) {
-                    writeStream.end();
-                }
+            socket.on('end', complete);
+            socket.on('error', err => {
                 safeSend('transfer-log', `❌ TCP 接收错误: ${err.message}`);
+                safeSend('file-transfer-error', {error: err.message});
+                if (writeStream) writeStream.destroy();
             });
         });
 
-        server.listen(port, () => {
+        server.on('error', err => {
+            safeSend('transfer-log', `❌ TCP 服务器错误: ${err.message}`);
+            safeSend('file-transfer-error', {error: err.message});
+        });
+        server.listen(core.clampInt(port, 1, 65535, 5201), () => {
             FileTransferModule.tcpServer = server;
             safeSend('transfer-log', `✅ TCP 服务端监听端口: ${port}`);
-        });
-
-        server.on('error', (err) => {
-            console.error('[TCP] 服务器错误:', err);
-            safeSend('transfer-log', `❌ TCP 服务器错误: ${err.message}`);
         });
     },
 
     // ---------------- TCP 发送端 ----------------
     sendTcp: (ip, port, filePath) => {
-        const socket = new net.Socket();
-        const fileName = path.basename(filePath);
-
-        // 获取文件信息
-        let fileSize = 0;
+        let fileSize;
         try {
-            const stats = fs.statSync(filePath);
-            fileSize = stats.size;
+            fileSize = fs.statSync(filePath).size;
         } catch (err) {
             safeSend('file-send-error', {error: `无法读取文件: ${err.message}`});
             return;
         }
-
+        const fileName = path.basename(filePath);
+        const socket = new net.Socket();
         let sent = 0;
         let startTime = Date.now();
         let lastProgressTime = startTime;
         let lastBytes = 0;
+        let stream = null;
+        let finished = false;
 
-        // 🔧 修复点5: 确保文件名正确编码
-        const encodedFileName = fileName;
-
-        socket.connect(port, ip, () => {
-            console.log(`[TCP] 连接到 ${ip}:${port}`);
-
-            // 发送开始事件
-            safeSend('file-send-start', {
-                fileName,
-                fileSize,
-                hash: 'N/A (TCP模式)'
+        const emitProgress = () => {
+            if (fileSize <= 0) return;
+            const now = Date.now();
+            if (now - lastProgressTime < 100) return;
+            const elapsed = (now - startTime) / 1000;
+            const speed = elapsed > 0 ? ((sent - lastBytes) / ((now - lastProgressTime) / 1000)) / (1024 * 1024) : 0;
+            safeSend('file-send-progress', {
+                sent, total: fileSize,
+                progress: Math.min(100, sent / fileSize * 100),
+                speed: Math.max(0, speed),
+                remainingBytes: Math.max(0, fileSize - sent),
+                elapsedSeconds: elapsed
             });
+            lastProgressTime = now;
+            lastBytes = sent;
+        };
 
-            safeSend('transfer-log', `📤 开始发送文件: ${fileName} (${FileTransferModule.formatFileSize(fileSize)})`);
-
-            // 发送元数据头
-            const meta = JSON.stringify({
-                fileName: encodedFileName,
-                fileSize: fileSize
-            });
-
-            // 发送元数据
-            const metaBuffer = Buffer.from(meta + '\n###END_METADATA###\n');
-            const canWrite = socket.write(metaBuffer);
-            sent += metaBuffer.length;
-
-            if (!canWrite) {
-                // 如果缓冲区已满，暂停读取
-                socket.pause();
-            }
-
-            // 创建读取流
-            const stream = fs.createReadStream(filePath);
-
+        socket.connect(core.clampInt(port, 1, 65535, 5201), ip, () => {
+            safeSend('file-send-start', {fileName, fileSize, hash: 'N/A (TCP模式)'});
+            safeSend('transfer-log', `📤 开始发送文件: ${fileName} (${core.formatFileSize(fileSize)})`);
+            socket.write(core.createMetadata(fileName, fileSize));
+            stream = fs.createReadStream(filePath);
             stream.on('data', chunk => {
-                const canWrite = socket.write(chunk);
+                if (!socket.write(chunk)) stream.pause();
                 sent += chunk.length;
-
-                // 🔧 修复点6: 改进进度更新逻辑
-                const now = Date.now();
-                const timeDiff = now - lastProgressTime;
-
-                // 每200ms更新一次，或当进度有明显变化时（1%以上）
-                if (fileSize > 0 && (timeDiff > 200 || (sent - lastBytes) / fileSize > 0.01)) {
-                    const elapsedSeconds = (now - startTime) / 1000;
-                    const speed = elapsedSeconds > 0 ? ((sent - lastBytes) / (timeDiff / 1000)) / (1024 * 1024) : 0;
-
-                    const progressPayload = {
-                        sent,
-                        total: fileSize,
-                        progress: Math.min(100, (sent / fileSize * 100).toFixed(1)),
-                        speed: Math.max(0, speed),
-                        remainingBytes: Math.max(0, fileSize - sent),
-                        elapsedSeconds: elapsedSeconds.toFixed(1)
-                    };
-
-                    console.log(`[TCP发送进度] ${progressPayload.progress}%, 速度: ${progressPayload.speed.toFixed(2)} MB/s`);
-                    safeSend('file-send-progress', progressPayload);
-
-                    lastProgressTime = now;
-                    lastBytes = sent;
-                }
-
-                if (!canWrite) {
-                    // 如果缓冲区已满，暂停读取
-                    stream.pause();
-                }
+                emitProgress();
             });
-
-            socket.on('drain', () => {
-                // 缓冲区有空间时恢复读取
-                stream.resume();
-            });
-
-            stream.on('end', () => {
-                console.log(`[TCP] 文件读取完成，总大小: ${sent} bytes`);
-                socket.end();
-            });
-
-            stream.on('error', (err) => {
-                console.error('[TCP] 文件读取错误:', err);
+            socket.on('drain', () => stream && stream.resume());
+            stream.on('end', () => socket.end());
+            stream.on('error', err => {
                 socket.destroy();
                 safeSend('file-send-error', {error: `文件读取错误: ${err.message}`});
             });
         });
 
         socket.on('end', () => {
-            const elapsedSeconds = (Date.now() - startTime) / 1000;
-            const avgSpeed = elapsedSeconds > 0 ? (sent / elapsedSeconds) / (1024 * 1024) : 0;
-
-            // 🔧 修复点7: 发送完成事件
-            const completeData = {
-                fileName,
-                fileSize,
-                sourceMD5: 'N/A',
-                receivedMD5: 'N/A',
-                match: true,
-                duration: elapsedSeconds,
-                protocol: 'TCP',
-                stats: {
-                    transfer: {
-                        bytes: sent,
-                        time: elapsedSeconds
-                    }
-                },
-                averageSpeed: avgSpeed * 8,
-                maxSpeed: avgSpeed * 8,
-                networkQuality: 'unknown'
-            };
-
-            safeSend('file-send-complete', completeData);
+            if (finished) return;
+            finished = true;
+            const elapsed = (Date.now() - startTime) / 1000;
+            const avg = elapsed > 0 ? (sent / elapsed) / (1024 * 1024) : 0;
+            safeSend('file-send-complete', {
+                fileName, fileSize,
+                sourceMD5: 'N/A', receivedMD5: 'N/A', match: true,
+                duration: elapsed, protocol: 'TCP',
+                stats: {transfer: {bytes: sent, time: elapsed}},
+                averageSpeed: avg * 8, maxSpeed: avg * 8, networkQuality: 'unknown'
+            });
             safeSend('transfer-log', `✅ TCP 发送完成: ${fileName}`);
-            safeSend('transfer-log', `⏱️ 传输时间: ${elapsedSeconds.toFixed(2)} 秒`);
-            safeSend('transfer-log', `📈 平均速度: ${(avgSpeed * 8).toFixed(2)} Mbps`);
         });
 
-        socket.on('error', (err) => {
-            console.error('[TCP] 发送错误:', err);
+        socket.on('error', err => {
             safeSend('file-send-error', {error: `TCP连接错误: ${err.message}`});
             safeSend('transfer-log', `❌ TCP 发送错误: ${err.message}`);
         });
-
-        // 设置超时
         socket.setTimeout(30000, () => {
             socket.destroy();
             safeSend('file-send-error', {error: '连接超时'});
@@ -1955,12 +1441,5 @@ const FileTransferModule = {
         FileTransferModule.stopServer();
     },
     // 添加在 FileTransferModule 对象内
-    formatFileSize: (bytes) => {
-        if (bytes === 0) return '0 B';
-
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(1024));
-
-        return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${units[i]}`;
-    },
+    formatFileSize: (bytes) => core.formatFileSize(bytes),
 };

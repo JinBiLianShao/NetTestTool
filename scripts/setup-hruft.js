@@ -1,7 +1,6 @@
 // HRUFT部署和配置脚本
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 console.log('🔧 NetTestTool Pro - HRUFT部署工具');
 console.log('==================================');

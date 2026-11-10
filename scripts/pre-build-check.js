@@ -1,120 +1,54 @@
+'use strict';
 /**
- * pre-build-check.js - 打包前检查脚本
- * 验证所有必需的二进制文件是否存在
+ * 打包前检查：只校验当前目标平台真正需要的二进制文件。
+ * - HRUFT: 各平台自带
+ * - iPerf: 本项目仅支持 iPerf 2，不再要求 iperf3
+ * - macOS: 由 GitHub Actions 的 macOS runner 构建，本脚本不强行要求其二进制
  */
-
 const fs = require('fs');
 const path = require('path');
-
-console.log('🔍 NetTestTool Pro - 打包前检查\n');
+const root = path.resolve(__dirname, '..');
 
 const platform = process.platform;
-let errors = [];
-let warnings = [];
+const target = process.env.NTT_TARGET_OS || platform; // win32 | linux | darwin
+const binDirByTarget = { win32: 'bin/windows', linux: 'bin/linux', darwin: 'bin/mac' };
+const hruftName = { win32: 'hruft.exe', linux: 'hruft', darwin: 'hruft' };
+const iperfName = { win32: 'iperf2.exe', linux: 'iperf2', darwin: 'iperf2' };
 
-// 检查目录结构
-const binDirs = {
-    windows: 'bin/windows',
-    linux: 'bin/linux',
-    darwin: 'bin/mac'
-};
-
-const requiredFiles = {
-    windows: [
-        'bin/windows/hruft.exe',
-        'bin/windows/iperf2.exe',
-        'bin/windows/iperf3.exe'
-    ],
-    linux: [
-        'bin/linux/hruft',
-        'bin/linux/iperf2',
-        'bin/linux/iperf3'
-    ],
-    darwin: [
-        'bin/mac/hruft',
-        'bin/mac/iperf2',
-        'bin/mac/iperf3'
-    ]
-};
-
-// 当前平台必须文件
-const currentPlatformFiles = requiredFiles[platform] || [];
-
-console.log(`📦 当前平台: ${platform}\n`);
-
-// 检查目录
-Object.entries(binDirs).forEach(([name, dir]) => {
-    if (fs.existsSync(dir)) {
-        console.log(`✅ 目录存在: ${dir}`);
-    } else {
-        if (name === platform) {
-            errors.push(`❌ 缺少必需目录: ${dir}`);
-        } else {
-            warnings.push(`⚠️  目录不存在: ${dir} (其他平台,可忽略)`);
-        }
-    }
-});
-
-console.log();
-
-// 检查文件
-currentPlatformFiles.forEach(file => {
-    if (fs.existsSync(file)) {
-        const stats = fs.statSync(file);
-        const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
-        console.log(`✅ ${file} (${sizeMB} MB)`);
-
-        // 检查权限 (Linux/Mac)
-        if (platform !== 'win32') {
-            const mode = stats.mode.toString(8);
-            if (!mode.endsWith('755') && !mode.endsWith('777')) {
-                warnings.push(`⚠️  ${file} 可能缺少执行权限 (${mode})`);
-            }
-        }
-    } else {
-        errors.push(`❌ 缺少文件: ${file}`);
-    }
-});
-
-console.log();
-
-// 检查其他平台 (跨平台打包)
-Object.entries(requiredFiles).forEach(([platName, files]) => {
-    if (platName === platform) return; // 跳过当前平台
-
-    const exists = files.filter(f => fs.existsSync(f));
-    if (exists.length > 0) {
-        console.log(`📁 ${platName} 平台文件: ${exists.length}/${files.length}`);
-    }
-});
-
-console.log('\n' + '='.repeat(60));
-
-// 输出结果
-if (errors.length > 0) {
-    console.log('\n❌ 发现错误:');
-    errors.forEach(e => console.log(`  ${e}`));
+const binDir = binDirByTarget[target];
+if (!binDir) {
+  console.error(`❌ 未知的目标平台: ${target}`);
+  process.exit(1);
 }
 
-if (warnings.length > 0) {
-    console.log('\n⚠️  警告:');
-    warnings.forEach(w => console.log(`  ${w}`));
+const required = [hruftName[target], iperfName[target]].map(n => path.join(root, binDir, n));
+const errors = [];
+
+console.log(`🔍 NetTestTool Pro - 打包前检查 (目标平台: ${target})\n`);
+for (const file of required) {
+  if (!fs.existsSync(file)) {
+    errors.push(`缺少文件: ${path.relative(root, file)}`);
+    continue;
+  }
+  const st = fs.statSync(file);
+  console.log(`✅ ${path.relative(root, file)} (${(st.size / 1024 / 1024).toFixed(2)} MB)`);
+  if (target !== 'win32' && !(st.mode & 0o111)) {
+    console.log(`   ⚠️  缺少执行权限，构建时将自动 chmod`);
+    try { fs.chmodSync(file, 0o755); } catch (e) { errors.push(`无法设置执行权限: ${file}`); }
+  }
 }
 
-if (errors.length === 0) {
-    console.log('\n✅ 所有检查通过! 可以开始打包\n');
-    console.log('运行打包命令:');
-    console.log('  npm run build:win    # Windows');
-    console.log('  npm run build:mac    # macOS');
-    console.log('  npm run build:linux  # Linux');
-    process.exit(0);
-} else {
-    console.log('\n❌ 检查失败! 请先修复上述问题\n');
-    console.log('解决方案:');
-    console.log('1. 编译 HRUFT 项目并复制可执行文件到 bin/ 目录');
-    console.log('2. 下载 iPerf:');
-    console.log('   - iPerf3: https://iperf.fr/iperf-download.php');
-    console.log('   - iPerf2: https://iperf.fr/iperf-download.php');
-    console.log('3. 或运行自动下载脚本: npm run setup:binaries');
-    process.exit(1);
+// 构建资源是 electron-builder 的硬性要求
+for (const asset of ['build/icon.icns', 'build/background.png', 'build/icons/256x256.png', 'main.ico']) {
+  const f = path.join(root, asset);
+  if (!fs.existsSync(f)) errors.push(`缺少构建资源: ${asset}`);
+  else console.log(`✅ ${asset}`);
 }
+
+if (errors.length) {
+  console.error('\n❌ 检查失败:');
+  errors.forEach(e => console.error('  ' + e));
+  console.error('\n请运行 npm run build:assets 及 npm run setup:binaries 补齐资源。');
+  process.exit(1);
+}
+console.log('\n✅ 所有检查通过，可以开始打包。');

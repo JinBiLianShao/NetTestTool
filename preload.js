@@ -197,53 +197,41 @@ contextBridge.exposeInMainWorld('api', {
 
 // --- 发送端事件 (Client) ---
   onFileSendProgress: (callback) => {
-    console.log('[Preload] 注册 file-send-progress 监听器');
     ipcRenderer.removeAllListeners('file-send-progress');
     ipcRenderer.on('file-send-progress', (_, data) => {
-      console.log('[Preload] 收到 file-send-progress 事件:', data);
-      callback(data);
+        callback(data);
     });
   },
   onFileSendComplete: (callback) => {
-    console.log('[Preload] 注册 file-send-complete 监听器');
     ipcRenderer.removeAllListeners('file-send-complete');
     ipcRenderer.on('file-send-complete', (_, data) => {
-      console.log('[Preload] 收到 file-send-complete 事件:', data);
-      callback(data);
+        callback(data);
     });
   },
   onFileSendError: (callback) => {
-    console.log('[Preload] 注册 file-send-error 监听器');
     ipcRenderer.removeAllListeners('file-send-error');
     ipcRenderer.on('file-send-error', (_, data) => {
-      console.log('[Preload] 收到 file-send-error 事件:', data);
-      callback(data);
+        callback(data);
     });
   },
 
 // --- 接收端事件 (Server) ---
   onFileTransferProgress: (callback) => {
-    console.log('[Preload] 注册 file-transfer-progress 监听器');
     ipcRenderer.removeAllListeners('file-transfer-progress');
     ipcRenderer.on('file-transfer-progress', (_, data) => {
-      console.log('[Preload] 收到 file-transfer-progress 事件:', data);
-      callback(data);
+        callback(data);
     });
   },
   onFileTransferComplete: (callback) => {
-    console.log('[Preload] 注册 file-transfer-complete 监听器');
     ipcRenderer.removeAllListeners('file-transfer-complete');
     ipcRenderer.on('file-transfer-complete', (_, data) => {
-      console.log('[Preload] 收到 file-transfer-complete 事件:', data);
-      callback(data);
+        callback(data);
     });
   },
   onFileTransferError: (callback) => {
-    console.log('[Preload] 注册 file-transfer-error 监听器');
     ipcRenderer.removeAllListeners('file-transfer-error');
     ipcRenderer.on('file-transfer-error', (_, data) => {
-      console.log('[Preload] 收到 file-transfer-error 事件:', data);
-      callback(data);
+        callback(data);
     });
   },
 
@@ -254,7 +242,7 @@ contextBridge.exposeInMainWorld('api', {
   /**
    * 打开开发者工具 (调试用)
    */
-  openDevTools: () => ipcRenderer.send('app:devtools'), // 需要在 main.js 对应监听
+  openDevTools: () => ipcRenderer.send('app:devtools'),
 
   /**
    * 清理所有监听器 (页面卸载时调用)
@@ -263,6 +251,7 @@ contextBridge.exposeInMainWorld('api', {
     const channels = [
       'ping-reply', 'scan-status', 'scan-device-found',
       'tp-data', 'tp-log', 'transfer-log',
+      'file-send-start', 'file-transfer-start', 'file-transfer-complete', 'file-send-complete',
       'file-send-progress', 'file-send-complete', 'file-send-error',
       'file-transfer-progress', 'file-transfer-complete', 'file-transfer-error'
     ];

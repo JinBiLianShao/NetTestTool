@@ -1,47 +1,39 @@
 {
   "name": "net-test-tool-pro",
-  "version": "1.5.5",
-  "description": "专业网络测试工具 - 集成HRUFT可靠UDP传输",
+  "version": "1.5.6",
+  "description": "专业网络测试工具 - 集成 HRUFT 可靠 UDP 传输",
   "main": "main.js",
-  "author": "NetTestTool Team",
+  "author": "jinbilianshao <2013182991@qq.com>",
   "license": "MIT",
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
     "dev": "NODE_ENV=development electron .",
-    "build": "npm run build:assets && electron-builder",
     "build:assets": "node scripts/build-assets.js",
+    "build": "npm run build:assets && electron-builder",
     "build:win": "electron-builder --win",
-    "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
-    "build:all": "electron-builder -wl",
+    "build:mac": "electron-builder --mac",
+    "build:publishable": "electron-builder --win --linux -p never",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "setup:hruft": "node scripts/setup-hruft.js",
     "setup:binaries": "node scripts/download-binaries.js",
     "test": "jest --verbose",
+    "test:coverage": "jest --coverage",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "prebuild": "node scripts/pre-build-check.js"
+    "prebuild": "node scripts/pre-build-check.js",
+    "build:rpm": "electron-builder --linux rpm -p never"
   },
   "dependencies": {
     "chart.js": "^4.5.1",
-    "iconv-lite": "^0.7.2",
-    "lodash": "^4.17.23",
-    "moment": "^2.30.1",
-    "node-notifier": "^10.0.1",
-    "uuid": "^13.0.0"
+    "iconv-lite": "^0.7.2"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
-    "app-builder-lib": "^26.0.12",
     "electron": "^40.0.0",
     "electron-builder": "^26.4.0",
-    "electron-builder-squirrel-windows": "^26.4.0",
-    "electron-winstaller": "^5.4.0",
-    "electron-devtools-installer": "^4.0.0",
-    "node-gyp": "^12.1.0",
-    "node-gyp-build": "^4.8.4",
     "eslint": "^9.39.2",
     "jest": "^30.2.0",
     "prettier": "^3.8.1"
@@ -56,6 +48,14 @@
     "files": [
       "**/*",
       "!bin/**/*",
+      "!tests/**/*",
+      "!coverage/**/*",
+      "!app_file/**/*",
+      "!build/**/*",
+      "!scripts/**/*",
+      "!temp/**/*",
+      "!dist/**/*",
+      "!**/*.test.js",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
       "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
       "!**/node_modules/*.d.ts",
@@ -64,19 +64,10 @@
       "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
       "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
       "!**/{appveyor.yml,.travis.yml,circle.yml}",
-      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}",
-      "!scripts/**/*",
-      "!temp/**/*"
+      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
     ],
     "asarUnpack": [
       "node_modules/iconv-lite/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "bin/${os}",
-        "to": "bin",
-        "filter": ["**/*"]
-      }
     ],
     "win": {
       "icon": "./main.ico",
@@ -84,13 +75,17 @@
         {
           "from": "bin/windows",
           "to": "bin",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         }
       ],
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         "portable"
       ],
@@ -102,7 +97,8 @@
           "description": "NetTestTool Project File",
           "role": "Editor"
         }
-      ]
+      ],
+      "artifactName": "NetTestToolPro-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -113,7 +109,8 @@
       "createStartMenuShortcut": true,
       "shortcutName": "NetTestTool Pro",
       "installerIcon": "./main.ico",
-      "uninstallerIcon": "./main.ico"
+      "uninstallerIcon": "./main.ico",
+      "artifactName": "NetTestToolPro-Setup-${version}.${ext}"
     },
     "portable": {
       "artifactName": "NetTestToolPro-Portable.exe"
@@ -126,10 +123,15 @@
         {
           "from": "bin/mac",
           "to": "bin",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         }
       ],
-      "target": ["dmg", "zip"]
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "dmg": {
       "background": "build/background.png",
@@ -155,28 +157,64 @@
     "linux": {
       "icon": "build/icons",
       "category": "Network",
-      "maintainer": "NetTestTool Team <2013182991@qq.com>",
+      "maintainer": "jinbilianshao <2013182991@qq.com>",
       "synopsis": "Professional Network Testing Tool",
       "description": "NetTestTool Pro is a comprehensive network testing tool with HRUFT reliable UDP transmission support.",
       "extraResources": [
         {
           "from": "bin/linux",
           "to": "bin",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         }
       ],
-      "target": ["AppImage", "deb", "rpm"]
+      "target": [
+        "AppImage",
+        "deb"
+      ]
     },
     "appImage": {
       "artifactName": "NetTestToolPro-${version}.${ext}"
     },
     "deb": {
-      "depends": ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1", "libappindicator3-1", "libsecret-1-0"]
+      "depends": [
+        "libgtk-3-4t64 | libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libsecret-1-0"
+      ]
     },
     "publish": {
       "provider": "github",
-      "owner": "nettesttool",
-      "repo": "NetTestTool-Pro"
+      "owner": "JinBiLianShao",
+      "repo": "NetTestTool"
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JinBiLianShao/NetTestTool.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JinBiLianShao/NetTestTool/issues"
+  },
+  "homepage": "https://github.com/JinBiLianShao/NetTestTool#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.js"
+    ],
+    "collectCoverageFrom": [
+      "lib/**/*.js"
+    ],
+    "coverageDirectory": "coverage",
+    "verbose": true
   }
 }
