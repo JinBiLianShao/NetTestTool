@@ -332,11 +332,15 @@
                             <label>窗口大小 (MB)</label>
                             <input type="number" id="udt-window-size" value="1" min="1" max="100">
                         </div>
+                        <div class="input-group">
+                            <label>弱网加速 (fast-start)</label>
+                            <input type="checkbox" id="udt-fast-start">
+                        </div>
                     </div>
                 </div>
 
                 <div class="file-selector">
-                    <input type="text" id="transfer-file-display" readonly placeholder="请选择要发送的文件...">
+                    <input type="text" id="transfer-file-display" readonly placeholder="请选择要发送的文件（可多选）...">
                     <button class="btn btn-secondary" onclick="triggerFileSelect()">
                         📁 选择文件
                     </button>

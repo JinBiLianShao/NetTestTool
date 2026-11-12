@@ -2,7 +2,7 @@
 
 一站式网络测试工具：网卡信息、Ping、局域网扫描、iPerf 2 吞吐量测试，以及基于 HRUFT 的可靠 UDP 文件传输。基于 Electron + Node.js，界面为深色主题。
 
-> 当前版本：**v1.5.7**。本项目采用 [MIT License](LICENSE)。
+> 当前版本：**v1.5.8**。本项目采用 [MIT License](LICENSE)。
 
 ## 功能
 
@@ -12,7 +12,7 @@
 | Ping | 自定义目标、间隔与包大小，Chart.js 实时绘制延迟曲线并统计最小/平均/最大 |
 | 局域网扫描 | 按网卡掩码计算扫描范围（大网段自动收敛到所在 /24，最多 20 并发），显示在线设备 IP/MAC 与进度 |
 | 吞吐量测试 | 内置 iPerf 2，支持服务端/客户端、TCP/UDP，实时带宽曲线与丢包提示 |
-| 文件传输 | HRUFT（可靠 UDP，BLAKE3 校验）与标准 TCP 双模式，含进度、速度与剩余时间 |
+| 文件传输 | HRUFT（可靠 UDP，BLAKE3 校验，支持 fast-start 弱网加速）与标准 TCP 双模式；支持多文件批量发送、发送前后文件大小一致性校验、校验失败时保留 .part 便于重传 |
 
 **关于 iPerf 版本**：界面与打包二进制只提供 **iPerf 2**。上游在 `6bd6ad6` 中移除了不稳定的 iPerf 3 支持，本版本沿用该决定。
 
@@ -36,7 +36,7 @@ npm start
 测试文件全部放在项目目录 `tests/` 下：
 
 ```bash
-npm test              # 31 个用例：纯逻辑 + 真实 TCP socket + 真实 iperf2/HRUFT 二进制
+npm test              # 41 个用例：纯逻辑 + 真实 TCP socket + 真实 iperf2/HRUFT 二进制
 npm run test:coverage # 生成 coverage/ 报告
 ```
 
@@ -71,6 +71,7 @@ Linux 无法产出可验证的 macOS DMG，因此本仓库的 Release 提供 Win
 ├── renderer.js           # 渲染进程：UI 与 Chart.js 图表
 ├── index.html / styles.css
 ├── lib/core.js           # 与 Electron 无关的纯逻辑（主进程与测试共用）
+├── lib/main/             # 主进程模块（runtime/system/ping/scan/throughput/transfer）
 ├── bin/                  # 各平台 HRUFT 与 iPerf 2 二进制
 ├── build/                # electron-builder 图标资源（由 build:assets 生成）
 ├── scripts/              # 构建资源、二进制准备、预检脚本
@@ -83,6 +84,16 @@ Linux 无法产出可验证的 macOS DMG，因此本仓库的 Release 提供 Win
 - 所有外部命令使用 `spawn` + 参数数组，用户输入经白名单校验，不拼接 shell 字符串。
 - 接收端对远端提供的文件名做净化，拒绝路径穿越，且只写入用户选定的保存目录。
 - 渲染进程隔离（`contextIsolation: true`、`nodeIntegration: false`），网络派生数据写入 DOM 前统一转义。
+
+## v1.5.8 更新（本版）
+
+- **代码结构**：main.js 从 1480 行拆成 lib/main/ 五个模块加一个薄组合层，共享运行时（路径解析、IPC、并发）收敛到 runtime.js。
+- **HRUFT 弱网加速**：文件传输面板新增 fast-start 开关，弱网/小文件场景更快。
+- **多文件批量发送**：支持一次选择多个文件逐个发送（TCP 与 HRUFT 均可）。
+- **发送一致性校验**：发送前记录文件大小，结束后再次核对，传输中被修改会给出告警。
+- **校验失败处理**：哈希校验失败时明确提示接收端保留 .part 文件，可重新传输。
+- **日志优化**：吞吐量与文件传输日志从逐行刷屏改为「分隔线 + 摘要 + 汇总」的分层格式，关键信息一目了然。
+- 自动更新状态机抽成纯函数并纳入测试。
 
 ## 自动更新
 

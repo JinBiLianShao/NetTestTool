@@ -231,3 +231,61 @@ describe('expandSubnet 网段展开', () => {
     expect(() => c.expandSubnet('1.2.3.4', '/40')).toThrow(/无效/);
   });
 });
+
+describe('HRUFT --fast-start 与网段边界', () => {
+  test('hruftSendArgs 携带 --fast-start 且位置在 --detailed 前', () => {
+    const args = c.hruftSendArgs('127.0.0.1', 5202, '/tmp/a.bin', null, true);
+    expect(args).toEqual(['send', '127.0.0.1', '5202', '/tmp/a.bin', '--fast-start', '--detailed']);
+  });
+
+  test('expandSubnet /32 只含本机地址', () => {
+    expect(c.expandSubnet('10.1.1.5', '/32')).toEqual(['10.1.1.5']);
+  });
+
+  test('expandSubnet /31 两个地址都保留（点对点链路）', () => {
+    expect(c.expandSubnet('10.0.0.0', '/31')).toEqual(['10.0.0.0', '10.0.0.1']);
+  });
+
+  test('expandSubnet 掩码 0.0.0.0 收敛到 /24 而非全互联网扫描', () => {
+    const list = c.expandSubnet('192.168.9.9', '0.0.0.0');
+    expect(list).toHaveLength(254);
+    expect(list[0]).toBe('192.168.9.1');
+  });
+
+  test('bandwidthToMbps 与 parseIperfLine 对 Gbps/小数/负号容错', () => {
+    expect(c.bandwidthToMbps('999.5 Mbits/sec')).toBeCloseTo(999.5);
+    expect(c.parseIperfLine('[  1] 0.00-1.00 sec  1.00 GBytes  8.59 Gbits/sec').speed).toBeCloseTo(8590);
+    expect(c.parseIperfLine('no speed here').speed).toBeNull();
+  });
+
+  test('formatIperfError 对未知名错误保留原文且带前缀', () => {
+    expect(c.formatIperfError('weird failure')).toBe('⚠️ weird failure');
+    expect(c.formatIperfError(null)).toBeNull();
+    expect(c.formatIperfError('   ')).toBeNull();
+  });
+});
+
+describe('自动更新状态机 (updaterMessage)', () => {
+  test('downloaded 携带版本号与重启提示', () => {
+    const r = c.updaterMessage('downloaded', '1.6.0');
+    expect(r.state).toBe('downloaded');
+    expect(r.version).toBe('1.6.0');
+    expect(r.message).toContain('1.6.0');
+    expect(r.message).toContain('退出应用');
+  });
+
+  test('available 提示后台下载', () => {
+    expect(c.updaterMessage('available', '1.6.0').message).toContain('后台下载');
+  });
+
+  test('up-to-date 与 error 的提示', () => {
+    expect(c.updaterMessage('up-to-date').message).toContain('最新');
+    expect(c.updaterMessage('error', 'network down').message).toContain('network down');
+  });
+
+  test('未知状态返回空消息且不抛错', () => {
+    const r = c.updaterMessage('weird-state');
+    expect(r.state).toBe('weird-state');
+    expect(r.message).toBe('');
+  });
+});

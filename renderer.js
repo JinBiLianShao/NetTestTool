@@ -505,6 +505,7 @@ const ThroughputModule = {
 // ==================== 7. 文件传输模块 (HRUFT) ====================
 const FileTransferModule = {
     selectedFile: null,
+    selectedFiles: [],
     progressThrottle: {last: 0, interval: 100},
     progressUpdateInterval: 100, // 进度更新间隔 (ms)
 
@@ -524,11 +525,16 @@ const FileTransferModule = {
     },
 
     async selectFile() {
-        const file = await window.api.selectSendFile();
-        if (file) {
-            this.selectedFile = file;
-            const sizeMB = (file.size / 1024 / 1024).toFixed(2);
-            document.getElementById('transfer-file-display').value = `${file.name} (${sizeMB} MB)`;
+        const files = window.api.selectSendFiles
+            ? await window.api.selectSendFiles()
+            : (await window.api.selectSendFile() ? [await window.api.selectSendFile()] : []);
+        if (files && files.length) {
+            this.selectedFiles = files;
+            this.selectedFile = files[0];
+            const total = files.reduce((s, f) => s + f.size, 0);
+            const sizeMB = (total / 1024 / 1024).toFixed(2);
+            document.getElementById('transfer-file-display').value =
+                files.length > 1 ? `已选 ${files.length} 个文件 (合计 ${sizeMB} MB)` : `${files[0].name} (${sizeMB} MB)`;
         }
     },
 
@@ -545,11 +551,12 @@ const FileTransferModule = {
         const config = {
             ip,
             port,
-            filePath: this.selectedFile.path,
+            files: this.selectedFiles.map(f => ({ path: f.path })),
             protocol,
+            fastStart: document.getElementById('udt-fast-start') ? document.getElementById('udt-fast-start').checked : false,
             udtConfig: protocol === 'hruft' ? {
                 packetSize: parseInt(document.getElementById('udt-packet-size').value),
-                windowSize: parseInt(document.getElementById('udt-window-size').value) * 1024 * 1024 // 转为字节
+                windowSize: parseInt(document.getElementById('udt-window-size').value) * 1024 * 1024
             } : null
         };
 

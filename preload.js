@@ -146,6 +146,12 @@ contextBridge.exposeInMainWorld('api', {
   selectSendFile: () => ipcRenderer.invoke('file:select-send-file'),
 
   /**
+   * 多选要发送的文件
+   * @returns {Promise<Array>} [{ path, name, size }]
+   */
+  selectSendFiles: () => ipcRenderer.invoke('file:select-send-files'),
+
+  /**
    * 启动文件接收服务 (HRUFT Server)
    * @param {Object} config - { port, savePath }
    * @returns {Promise<string>} 启动结果
@@ -162,6 +168,12 @@ contextBridge.exposeInMainWorld('api', {
    * @param {Object} config - { ip, port, filePath, protocol, udtConfig }
    */
   sendFile: (config) => ipcRenderer.send('file:send', config),
+
+  /**
+   * 批量发送多个文件
+   * @param {Object} config - { ip, port, files, protocol, udtConfig, fastStart }
+   */
+  sendFiles: (config) => ipcRenderer.send('file:send', config),
 
   /**
    * 取消特定的 HRUFT 传输 (预留接口)
