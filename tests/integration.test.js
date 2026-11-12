@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 const crypto = require('crypto');
-const {spawn} = require('child_process');
+const {spawn, spawnSync} = require('child_process');
 const c = require('../lib/core');
 
 const root = path.resolve(__dirname, '..');
@@ -102,26 +102,51 @@ describe('TCP 文件传输（真实 socket，二进制完整性）', () => {
   }, 15000);
 });
 
-describe('随包二进制可用性', () => {
-  test('Linux HRUFT 二进制可执行并打印用法', done => {
+describe('随包二进制可用性（平台感知，二进制缺失时显式 skip）', () => {
+  const isLinux = process.platform === 'linux';
+  const expectBinaries = process.env.NTT_EXPECT_PLATFORM_BINARIES !== '0' && isLinux;
+  const maybeTest = expectBinaries ? test : test.skip;
+
+  maybeTest('HRUFT 二进制可执行，用法里列出 --fast-start，版本为 4.1.0', done => {
     const bin = path.join(root, 'bin', 'linux', 'hruft');
-    if (!fs.existsSync(bin)) return done();
+    if (!fs.existsSync(bin)) return done(new Error('缺少随包 Linux HRUFT 二进制'));
     fs.chmodSync(bin, 0o755);
     const child = spawn(bin, [], {stdio: ['ignore', 'pipe', 'pipe']});
     let out = '';
     child.stdout.on('data', d => out += d);
     child.stderr.on('data', d => out += d);
     child.on('close', () => {
+      expect(out).toMatch(/HRUFT Pro 4\.1\.0/);
       expect(out).toMatch(/hruft send/);
-      expect(out).toMatch(/hruft recv/);
+      expect(out).toMatch(/--fast-start/);
       done();
     });
     child.on('error', done);
   }, 10000);
 
-  test('Linux iPerf2 二进制可执行并报告版本', done => {
+  maybeTest('HRUFT 二进制真正接受 --fast-start（不是只测参数数组）', done => {
+    const bin = path.join(root, 'bin', 'linux', 'hruft');
+    if (!fs.existsSync(bin)) return done(new Error('缺少随包 Linux HRUFT 二进制'));
+    const payload = path.join(os.tmpdir(), 'ntt-faststart-probe.bin');
+    fs.writeFileSync(payload, 'x');
+    // 连一个没人监听的端口：参数被接受时进入连接流程并超时/拒绝；
+    // 参数不被接受时立刻打印 "Unknown option" 并退出码非 0。
+    const child = spawn(bin, ['send', '127.0.0.1', '45997', payload, '--fast-start'], {stdio: ['ignore', 'pipe', 'pipe']});
+    let out = '';
+    child.stdout.on('data', d => out += d);
+    child.stderr.on('data', d => out += d);
+    child.on('close', () => {
+      fs.rmSync(payload, {force: true});
+      expect(out).not.toMatch(/Unknown option/);
+      expect(out).toMatch(/Connecting to|Connect failed|INFO|ERROR/);
+      done();
+    });
+    child.on('error', done);
+  }, 15000);
+
+  maybeTest('Linux iPerf2 二进制可执行并报告版本', done => {
     const bin = path.join(root, 'bin', 'linux', 'iperf2');
-    if (!fs.existsSync(bin)) return done();
+    if (!fs.existsSync(bin)) return done(new Error('缺少随包 Linux iPerf2 二进制'));
     fs.chmodSync(bin, 0o755);
     const child = spawn(bin, ['--version'], {stdio: ['ignore', 'pipe', 'pipe']});
     let out = '';
@@ -131,9 +156,9 @@ describe('随包二进制可用性', () => {
     child.on('error', done);
   }, 10000);
 
-  test('iPerf2 本机服务端/客户端真实跑一轮并解析出速率', done => {
+  maybeTest('iPerf2 本机服务端/客户端真实跑一轮并解析出速率', done => {
     const bin = path.join(root, 'bin', 'linux', 'iperf2');
-    if (!fs.existsSync(bin)) return done();
+    if (!fs.existsSync(bin)) return done(new Error('缺少随包 Linux iPerf2 二进制'));
     const port = 45203;
     const server = spawn(bin, c.iperfServerArgs(port, 'tcp', 'iperf2'), {stdio: 'ignore'});
     server.unref();
@@ -154,5 +179,31 @@ describe('随包二进制可用性', () => {
       client.on('error', e => { server.kill('SIGKILL'); done(e); });
     }, 300);
     server.on('error', done);
+  }, 20000);
+
+  // Windows exe 只在有 wine 的 Linux 构建机上验证；CI 的 Windows runner
+  // 不需要 wine，靠上面的 GitHub Actions 打包流程覆盖。
+  maybeTest('Windows HRUFT exe 在 wine 下能启动并接受 --fast-start', done => {
+    const wine = spawnSync('which', ['wine'], {encoding: 'utf8'});
+    if (wine.status !== 0) return done(new Error('wine 不可用，跳过 Windows exe 验证'));
+    const exe = path.join(root, 'bin', 'windows', 'hruft.exe');
+    for (const dll of ['libc++.dll', 'libunwind.dll', 'libwinpthread-1.dll']) {
+      if (!fs.existsSync(path.join(root, 'bin', 'windows', dll))) return done(new Error('缺少 ' + dll));
+    }
+    const payload = path.join(os.tmpdir(), 'ntt-win-probe.bin');
+    fs.writeFileSync(payload, 'x');
+    const child = spawn('wine', [exe, 'send', '127.0.0.1', '45996', 'Z:' + payload.replace(/\//g, '\\'), '--fast-start'], {
+      stdio: ['ignore', 'pipe', 'pipe'], cwd: path.join(root, 'bin', 'windows')
+    });
+    let out = '';
+    child.stdout.on('data', d => out += d);
+    child.stderr.on('data', d => out += d);
+    child.on('close', () => {
+      fs.rmSync(payload, {force: true});
+      expect(out).not.toMatch(/Unknown option/);
+      expect(out).toMatch(/HRUFT Pro|Connecting to|Connect failed|INFO|ERROR/);
+      done();
+    });
+    child.on('error', done);
   }, 20000);
 });

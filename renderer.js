@@ -525,9 +525,13 @@ const FileTransferModule = {
     },
 
     async selectFile() {
-        const files = window.api.selectSendFiles
-            ? await window.api.selectSendFiles()
-            : (await window.api.selectSendFile() ? [await window.api.selectSendFile()] : []);
+        let files;
+        if (window.api.selectSendFiles) {
+            files = await window.api.selectSendFiles();
+        } else {
+            const one = await window.api.selectSendFile();
+            files = one ? [one] : [];
+        }
         if (files && files.length) {
             this.selectedFiles = files;
             this.selectedFile = files[0];
